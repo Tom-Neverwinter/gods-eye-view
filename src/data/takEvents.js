@@ -37,7 +37,6 @@ function colorFor(record) {
 }
 
 const state = {
-  viewer: null,
   dataSource: null,
   enabled: false,
   records: [],
@@ -154,6 +153,11 @@ async function loadEvents() {
       renderRecords();
       return;
     }
+    // The endpoint is deliberately non-2xx (503) for the "not configured"
+    // case above, handled via `available` — this catches any OTHER
+    // non-2xx response (e.g. a fronting proxy/rate-limiter in a non-dev
+    // deployment) instead of silently trusting its body as a healthy feed.
+    if (!response.ok) throw new Error(payload?.error || `TAK feed HTTP ${response.status}`);
     const records = Array.isArray(payload?.events) ? payload.events : [];
     state.records = records;
     state.recordById = new Map(records.map((r) => [r.uid, r]));
@@ -174,7 +178,6 @@ const takEventsLayer = {
   source: 'TAK Server (BYOS)',
   updateInterval: POLL_INTERVAL_MS,
   init(viewer) {
-    state.viewer = viewer;
     state.dataSource = new Cesium.CustomDataSource('tak-events');
     state.dataSource.show = false;
     viewer.dataSources.add(state.dataSource);
