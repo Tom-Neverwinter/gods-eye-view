@@ -185,6 +185,9 @@ const LAYER_ALIASES = new Map([
   ['meshtastic', 'meshtastic-nodes'],
   ['mesh nodes', 'meshtastic-nodes'],
   ['mesh network', 'meshtastic-nodes'],
+  ['wigle', 'wigle-networks'],
+  ['wifi networks', 'wigle-networks'],
+  ['wi-fi networks', 'wigle-networks'],
 ]);
 
 const CITY_ALIASES = new Map([

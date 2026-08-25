@@ -15,6 +15,7 @@ import aisLiveVesselsLayer from './data/aisLiveVessels.js';
 import militaryInstallationsLayer from './data/militaryInstallations.js';
 import alprCamerasLayer from './data/alprCameras.js';
 import meshtasticNodesLayer from './data/meshtasticNodes.js';
+import wigleNetworksLayer from './data/wigleNetworks.js';
 import militaryAwarenessLayer from './data/militaryAwareness.js';
 import localDataLayers from './data/localLayers.js';
 import { LAYER_STATE_REGISTRY } from './data/layerState.js';
@@ -226,6 +227,7 @@ async function init() {
     dataManager.register(militaryInstallationsLayer);
     dataManager.register(alprCamerasLayer);
     dataManager.register(meshtasticNodesLayer);
+    dataManager.register(wigleNetworksLayer);
     dataManager.register(militaryAwarenessLayer);
     militaryAwarenessLayer.attachDataManager(dataManager);
     for (const layer of localDataLayers) {
