@@ -155,14 +155,21 @@ function installInteraction(viewer) {
 }
 
 async function loadNodes() {
-  if (!state.enabled) return false;
+  // A `false` return is a manager.js contract: DURING the enable transition
+  // (not just on the periodic poll), it's treated as a fatal enable failure
+  // that bounces the toggle back off — wrong for "server unreachable this
+  // poll", which must stay enabled and read UNAVAILABLE via getStats(). Only
+  // ever resolve true (success) or undefined (anything else); never false.
+  if (!state.enabled) return;
   try {
     const response = await fetch(API_URL);
+    if (!state.enabled || !state.dataSource) return; // torn down while in flight
     if (!response.ok) {
       state.error = `Meshtastic feed HTTP ${response.status}`;
-      return false;
+      return;
     }
     const payload = await response.json();
+    if (!state.enabled || !state.dataSource) return; // torn down while in flight
     const records = Array.isArray(payload?.nodes) ? payload.nodes : [];
     records.sort((a, b) => (b.lastSeen || 0) - (a.lastSeen || 0));
     state.records = records;
@@ -174,7 +181,6 @@ async function loadNodes() {
     return true;
   } catch (e) {
     state.error = 'Meshtastic feed network error';
-    return false;
   }
 }
 

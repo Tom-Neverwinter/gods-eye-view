@@ -4906,10 +4906,17 @@ function ensureMeshtasticConnection() {
       // Malformed or unrelated packet on the wildcard subscription — ignore.
     }
     if (!record) return;
-    // Hard cap: once full, an unseen node is dropped rather than scanning for
-    // an eviction candidate on every message — the periodic sweep below is
-    // what actually reclaims space, this just stops unbounded growth between sweeps.
-    if (_meshtasticNodes.size >= MESHTASTIC_NODE_CACHE_MAX && !_meshtasticNodes.has(record.id)) return;
+    // Hard cap, true LRU: a Map's iteration order is insertion order and a
+    // `set()` on an EXISTING key does not move it — so an update must
+    // delete-then-set to push the node to the "most recent" end, or the
+    // first key is merely oldest-INSERTED, not oldest-SEEN. With that in
+    // place, evicting the first key on overflow is correct LRU eviction
+    // rather than silently dropping the new node (the previous behavior,
+    // which left new nodes in a dense region permanently invisible).
+    if (_meshtasticNodes.size >= MESHTASTIC_NODE_CACHE_MAX && !_meshtasticNodes.has(record.id)) {
+      _meshtasticNodes.delete(_meshtasticNodes.keys().next().value);
+    }
+    _meshtasticNodes.delete(record.id);
     record.lastSeen = Date.now();
     _meshtasticNodes.set(record.id, record);
   });
