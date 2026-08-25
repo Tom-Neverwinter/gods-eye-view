@@ -176,6 +176,12 @@ const LAYER_ALIASES = new Map([
   ['firms', 'local-firms'],
   ['fires', 'local-firms'],
   ['active fires', 'local-firms'],
+  ['alpr', 'alpr-cameras'],
+  ['alpr cameras', 'alpr-cameras'],
+  ['flock cameras', 'alpr-cameras'],
+  ['license plate readers', 'alpr-cameras'],
+  ['license plate cameras', 'alpr-cameras'],
+  ['plate readers', 'alpr-cameras'],
 ]);
 
 const CITY_ALIASES = new Map([
