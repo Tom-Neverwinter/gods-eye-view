@@ -42,6 +42,7 @@ import {
   isOverBudget as isTomTomOverBudget,
 } from './src/data/tomtomTiles.js';
 import { filterTrailing24h, parseFirmsCsv } from './src/data/firmsCsv.js';
+import { isValidWigleViewport, normalizeWigleNetwork, wiglePacificDayKey } from './src/data/wigleApi.js';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { defineConfig, loadEnv } from 'vite';
@@ -4889,6 +4890,171 @@ function aisLiveProxy() {
 }
 
 /**
+ * Vite plugin: WiGLE Wi-Fi network search proxy (BYOK).
+ *
+ * WiGLE requires HTTP Basic Auth with a private API name/token, so the
+ * browser can't call api.wigle.net directly. Without WIGLE_API_NAME and
+ * WIGLE_API_TOKEN, /api/wigle/search reports `available:false` and the
+ * client layer shows UNAVAILABLE rather than simulating data.
+ *
+ * WiGLE's own daily query allowance is small and account-dependent (new
+ * accounts especially), so this caches aggressively (24h, memory + disk —
+ * access points don't move) and adds an in-memory daily counter as a
+ * courtesy soft cap. ponytail: unlike TomTom's persisted budget.json, this
+ * counter resets on a server restart; add persistence if that ever proves
+ * insufficient in practice.
+ */
+function wigleProxy() {
+  const WIGLE_URL = 'https://api.wigle.net/api/v2/network/search';
+  const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+  const CACHE_DIR = path.join(process.cwd(), '.gev-cache', 'wigle');
+  const MEM_MAX_ENTRIES = 200;
+  const DEFAULT_DAILY_BUDGET = 50;
+
+  /** @type {Map<string, {at:number, body:object}>} */
+  const mem = new Map();
+  /** @type {Map<string, Promise<object>>} */
+  const inFlight = new Map();
+  let dailyCount = 0;
+  let dailyKey = null;
+
+  function dailyBudgetLimit() {
+    const raw = Number.parseInt(process.env.WIGLE_DAILY_QUERY_BUDGET || '', 10);
+    return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_DAILY_BUDGET;
+  }
+
+  function underDailyBudget() {
+    const key = wiglePacificDayKey();
+    if (key !== dailyKey) { dailyKey = key; dailyCount = 0; }
+    return dailyCount < dailyBudgetLimit();
+  }
+
+  function diskPath(cacheKey) {
+    return path.join(CACHE_DIR, `${createHash('sha1').update(cacheKey).digest('hex')}.json`);
+  }
+
+  async function readDisk(cacheKey) {
+    try {
+      const raw = await fsp.readFile(diskPath(cacheKey), 'utf8');
+      const entry = JSON.parse(raw);
+      if (!entry || typeof entry.at !== 'number' || Date.now() - entry.at > CACHE_TTL_MS) return null;
+      return entry;
+    } catch {
+      return null;
+    }
+  }
+
+  function writeDisk(cacheKey, entry) {
+    fsp.mkdir(CACHE_DIR, { recursive: true })
+      .then(() => fsp.writeFile(diskPath(cacheKey), JSON.stringify(entry)))
+      .catch((err) => console.warn('[WiGLE Proxy] disk cache write failed:', err?.message || err));
+  }
+
+  async function searchWigle(box) {
+    const cacheKey = `${box.south.toFixed(4)},${box.west.toFixed(4)},${box.north.toFixed(4)},${box.east.toFixed(4)}`;
+    const memHit = mem.get(cacheKey);
+    if (memHit && Date.now() - memHit.at <= CACHE_TTL_MS) return memHit.body;
+    const diskHit = await readDisk(cacheKey);
+    if (diskHit) { mem.set(cacheKey, diskHit); return diskHit.body; }
+
+    const existing = inFlight.get(cacheKey);
+    if (existing) return existing;
+
+    const request = (async () => {
+      if (!underDailyBudget()) {
+        const err = new Error('WiGLE daily query budget exhausted for this server');
+        err.status = 429;
+        throw err;
+      }
+      dailyCount += 1;
+      const auth = Buffer.from(`${process.env.WIGLE_API_NAME}:${process.env.WIGLE_API_TOKEN}`).toString('base64');
+      // freenet/paynet deliberately omitted — their true/false semantics
+      // aren't reliably documented and an untested guess risks silently
+      // filtering every result. Default WiGLE behavior (no filter) is safer.
+      const params = new URLSearchParams({
+        latrange1: box.south.toFixed(6),
+        latrange2: box.north.toFixed(6),
+        longrange1: box.west.toFixed(6),
+        longrange2: box.east.toFixed(6),
+      });
+      const response = await fetch(`${WIGLE_URL}?${params}`, {
+        headers: { Authorization: `Basic ${auth}` },
+      });
+      const body = await response.json();
+      if (!response.ok || body?.success === false) {
+        const err = new Error(body?.message || `WiGLE API HTTP ${response.status}`);
+        err.status = response.status >= 400 ? response.status : 502;
+        throw err;
+      }
+      const networks = Array.isArray(body?.results)
+        ? body.results.map(normalizeWigleNetwork).filter(Boolean)
+        : [];
+      const entry = { at: Date.now(), body: networks };
+      mem.set(cacheKey, entry);
+      if (mem.size > MEM_MAX_ENTRIES) mem.delete(mem.keys().next().value);
+      writeDisk(cacheKey, entry);
+      return networks;
+    })();
+    inFlight.set(cacheKey, request);
+    try {
+      return await request;
+    } finally {
+      inFlight.delete(cacheKey);
+    }
+  }
+
+  function hasWigleKey() {
+    return Boolean(process.env.WIGLE_API_NAME && process.env.WIGLE_API_TOKEN);
+  }
+
+  function install(middlewares) {
+    middlewares.use('/api/wigle/status', (req, res) => {
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      res.setHeader('Cache-Control', 'no-store');
+      res.end(JSON.stringify({ hasKey: hasWigleKey() }));
+    });
+    middlewares.use('/api/wigle/search', async (req, res) => {
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      res.setHeader('Cache-Control', 'no-store');
+      if (!hasWigleKey()) {
+        res.statusCode = 503;
+        res.end(JSON.stringify({
+          available: false, networks: [],
+          error: 'WIGLE_API_NAME/WIGLE_API_TOKEN not configured',
+        }));
+        return;
+      }
+      const incoming = new URL(req.url || '', 'http://localhost');
+      const box = {
+        south: Number(incoming.searchParams.get('south')),
+        west: Number(incoming.searchParams.get('west')),
+        north: Number(incoming.searchParams.get('north')),
+        east: Number(incoming.searchParams.get('east')),
+      };
+      if (!isValidWigleViewport(box)) {
+        res.statusCode = 400;
+        res.end(JSON.stringify({ available: true, networks: [], error: 'Invalid or oversized viewport' }));
+        return;
+      }
+      try {
+        const networks = await searchWigle(box);
+        res.statusCode = 200;
+        res.end(JSON.stringify({ available: true, networks, source: 'WiGLE' }));
+      } catch (error) {
+        res.statusCode = error?.status || 502;
+        res.end(JSON.stringify({ available: true, networks: [], error: error?.message || 'WiGLE proxy error' }));
+      }
+    });
+  }
+
+  return {
+    name: 'wigle-proxy',
+    configureServer(server) { install(server.middlewares); },
+    configurePreviewServer(server) { install(server.middlewares); },
+  };
+}
+
+/**
  * Vite plugin: aircraft track-history backfill proxies (PRD WS-F F1/F2).
  *
  * /api/opensky-track?icao24=<hex6> — OpenSky GET /tracks/all (experimental;
@@ -7693,6 +7859,7 @@ export default defineConfig(({ mode }) => {
       gbfsProxy(),
       adsbLolProxy(),
       aisLiveProxy(),
+      wigleProxy(),
       trackBackfillProxies(),
       openAiRealtimeProxy(),
       googlePlacesContextProxy(),

@@ -192,6 +192,15 @@ export const TOMTOM_CREDIT = {
     '<a href="https://www.tomtom.com" target="_blank" rel="noopener">TomTom</a>',
 };
 
+/** Registered once a keyed WiGLE search actually returns data (BYOK — keyless installs never show it). */
+export const WIGLE_CREDIT = {
+  key: 'wigle',
+  html:
+    'Wi-Fi network observations: ' +
+    '<a href="https://wigle.net" target="_blank" rel="noopener">WiGLE.net</a> ' +
+    '(crowdsourced; subject to the WiGLE EULA)',
+};
+
 /** Registered when the first Natural Earth region outline resolves (public
  * domain — no attribution required; credited as a courtesy). */
 export const NATURAL_EARTH_CREDIT = {
