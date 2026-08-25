@@ -252,12 +252,23 @@ async function pollDevice() {
       state.warnings.unshift({ ...warning, position: state.position });
     }
     if (state.warnings.length > MAX_RENDERED) state.warnings.length = MAX_RENDERED;
+    // A warning first seen before any location fix arrived would otherwise be
+    // stuck at position:null forever (renderWarnings() skips unplaced
+    // warnings) even after a fix DOES arrive on a later poll. Backfill it with
+    // whatever fix we have now — still an approximation, same as a warning
+    // placed at first-observation time, just late.
+    let backfilled = false;
+    if (state.position) {
+      for (const warning of state.warnings) {
+        if (!warning.position) { warning.position = state.position; backfilled = true; }
+      }
+    }
     state.lastUpdate = Date.now();
     state.error = state.geoError
-      || (fresh.some((w) => !state.position)
+      || (fresh.length > 0 && !state.position
         ? 'Some warnings can’t be placed yet — waiting for a location fix'
         : null);
-    if (fresh.length) renderWarnings();
+    if (fresh.length || backfilled) renderWarnings();
     return true;
   } catch (e) {
     if (e?.name === 'AbortError') return;
