@@ -283,6 +283,13 @@ export class GevRealtimeController {
     this.radioToVoiceEnabled = readStoredRadioToVoiceEnabled();
     this._radioVoiceContext = null;
     this._radioVoiceElSourceByEl = null;
+    // The one element currently `.connect()`-ed to `context.destination` (the
+    // shared speaker route — see `_ensureRadioVoiceCaptureTap`). Tracked
+    // separately from `_radioVoiceMix.connectedEl` because the speaker route
+    // exists even with no live session, and must be explicitly severed from
+    // a stale element on station change or that element's node (and the
+    // silent, abandoned `<audio>` it wraps) leaks for the controller's life.
+    this._radioVoiceSpeakerEl = null;
     this._radioVoiceMix = null;
     this._radioVoiceCaptureStatus = { capturing: false, reason: 'idle' };
     this.pc = null;
@@ -1683,6 +1690,7 @@ export class GevRealtimeController {
     context.resume().catch(() => {});
     this._radioVoiceContext = context;
     this._radioVoiceElSourceByEl = new WeakMap();
+    this._radioVoiceSpeakerEl = null;
     return context;
   }
 
@@ -1734,12 +1742,24 @@ export class GevRealtimeController {
       try {
         source = context.createMediaElementSource(el);
         this._radioVoiceElSourceByEl.set(el, source);
-        // PERMANENT for this element's life — see `_ensureRadioVoiceContext`.
-        source.connect(context.destination);
       } catch (error) {
         this._radioVoiceCaptureStatus = { capturing: false, reason: 'capture-blocked' };
         return;
       }
+    }
+    if (this._radioVoiceSpeakerEl !== el) {
+      // The outgoing element is already paused/abandoned by Radio (station
+      // change installs a fresh element) — safe to fully sever it from the
+      // shared speaker destination so its node (and the element it holds
+      // alive per the Web Audio spec) can actually be garbage collected,
+      // instead of leaking one permanently-live pair per station change.
+      if (this._radioVoiceSpeakerEl) {
+        const outgoing = this._radioVoiceElSourceByEl.get(this._radioVoiceSpeakerEl);
+        try { outgoing?.disconnect(context.destination); } catch { /* already disconnected */ }
+      }
+      // PERMANENT (until superseded) — see `_ensureRadioVoiceContext`.
+      try { source.connect(context.destination); } catch { /* already connected */ }
+      this._radioVoiceSpeakerEl = el;
     }
     if (mix && mix.connectedEl !== el) {
       if (mix.connectedEl) {
@@ -1772,6 +1792,7 @@ export class GevRealtimeController {
     this._radioVoiceContext?.close?.().catch(() => {});
     this._radioVoiceContext = null;
     this._radioVoiceElSourceByEl = null;
+    this._radioVoiceSpeakerEl = null;
   }
 
   /**
