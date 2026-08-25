@@ -8,7 +8,7 @@ import {
 } from './contextStore.js';
 import { registerPickOwner, unregisterPickOwner } from './pickRegistry.js';
 import { registerDynamicCredit, WIGLE_CREDIT } from './dataCredits.js';
-import { WIGLE_MAX_VIEWPORT_DEGREES, wigleNetworkFreshness } from './wigleApi.js';
+import { WIGLE_MAX_VIEWPORT_DEGREES, wigleRetryDelayMs, wigleNetworkFreshness } from './wigleApi.js';
 
 /**
  * @file WiGLE Wi-Fi network layer — crowdsourced observations, not live RF
@@ -145,9 +145,7 @@ function installInteraction(viewer) {
 function scheduleUnavailableRetry() {
   if (!state.enabled) return;
   clearTimeout(state.retryTimer);
-  const RETRY_MIN_MS = 30000;
-  const RETRY_CEIL_MS = 240000;
-  state.retryDelayMs = state.retryDelayMs > 0 ? Math.min(state.retryDelayMs * 2, RETRY_CEIL_MS) : RETRY_MIN_MS;
+  state.retryDelayMs = wigleRetryDelayMs(state.retryDelayMs);
   state.retryTimer = setTimeout(() => {
     state.retryTimer = null;
     if (state.enabled && !state.loading) loadNetworks();
@@ -206,7 +204,10 @@ async function loadNetworks() {
     state.error = null;
     clearUnavailableRetry();
     renderRecords();
-    registerDynamicCredit(state.viewer, WIGLE_CREDIT);
+    // Only once a keyed search actually returns data — matches the
+    // documented DATA_SOURCES.md contract; an empty viewport must not
+    // register the credit for data that was never shown.
+    if (records.length) registerDynamicCredit(state.viewer, WIGLE_CREDIT);
   } catch (error) {
     if (error?.name === 'AbortError') return;
     state.status = 'unavailable';

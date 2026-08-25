@@ -33,14 +33,20 @@ export function normalizeWigleNetwork(raw) {
   const lon = Number(raw?.trilong);
   if (!Number.isFinite(lat) || !Number.isFinite(lon) || (lat === 0 && lon === 0)) return null;
   const text = (v) => { const t = String(v ?? '').trim(); return t || null; };
+  // `Number('')` is 0, not NaN — a blank field must read as missing.
+  const num = (v) => {
+    if (v === '' || v == null) return null;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  };
   return {
     id: text(raw?.netid) || `wigle:${lat.toFixed(6)},${lon.toFixed(6)}`,
     netid: text(raw?.netid),
     ssid: text(raw?.ssid),
     encryption: text(raw?.encryption),
     type: text(raw?.type),
-    channel: Number.isFinite(Number(raw?.channel)) ? Number(raw.channel) : null,
-    qos: Number.isFinite(Number(raw?.qos)) ? Number(raw.qos) : null,
+    channel: num(raw?.channel),
+    qos: num(raw?.qos),
     firstSeen: text(raw?.firsttime),
     lastSeen: text(raw?.lasttime),
     latitude: lat,
@@ -71,4 +77,15 @@ export function wiglePacificDayKey(nowMs = Date.now()) {
     timeZone: 'America/Los_Angeles',
     year: 'numeric', month: '2-digit', day: '2-digit',
   }).format(nowMs);
+}
+
+/**
+ * Backoff progression for the unavailable-state retry: 30 s, doubling to a
+ * 240 s ceiling. Pure so the progression is pinnable without booting the layer.
+ */
+export function wigleRetryDelayMs(prevDelayMs) {
+  const RETRY_MIN_MS = 30000;
+  const RETRY_CEIL_MS = 240000;
+  if (!Number.isFinite(prevDelayMs) || prevDelayMs <= 0) return RETRY_MIN_MS;
+  return Math.min(prevDelayMs * 2, RETRY_CEIL_MS);
 }

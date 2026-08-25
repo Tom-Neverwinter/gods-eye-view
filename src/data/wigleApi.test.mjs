@@ -6,6 +6,7 @@ import {
   normalizeWigleNetwork,
   wigleNetworkFreshness,
   wiglePacificDayKey,
+  wigleRetryDelayMs,
 } from './wigleApi.js';
 
 // Real example shape from the WiGLE v2 network/search API.
@@ -56,6 +57,12 @@ test('normalizeWigleNetwork: rejects untriangulated (0,0) or missing coordinates
   assert.equal(normalizeWigleNetwork(null), null);
 });
 
+test('normalizeWigleNetwork: a present-but-blank channel/qos reads as missing, not zero', () => {
+  const record = normalizeWigleNetwork({ ...SAMPLE_RESULT, channel: '', qos: '' });
+  assert.equal(record.channel, null);
+  assert.equal(record.qos, null);
+});
+
 test('wigleNetworkFreshness: buckets by age in days', () => {
   const now = Date.parse('2026-08-24T00:00:00.000Z');
   assert.equal(wigleNetworkFreshness('2026-08-01T00:00:00.000Z', now), 'recent');
@@ -69,4 +76,11 @@ test('wiglePacificDayKey: renders a stable YYYY-MM-DD in America/Los_Angeles', (
   // 07:30 UTC on Jan 1 is still Dec 31 in US/Pacific (UTC-8 in January).
   assert.equal(wiglePacificDayKey(Date.parse('2026-01-01T07:30:00.000Z')), '2025-12-31');
   assert.equal(wiglePacificDayKey(Date.parse('2026-01-01T09:00:00.000Z')), '2026-01-01');
+});
+
+test('wigleRetryDelayMs: doubles from a 30s floor to a 240s ceiling', () => {
+  assert.equal(wigleRetryDelayMs(0), 30000);
+  assert.equal(wigleRetryDelayMs(30000), 60000);
+  assert.equal(wigleRetryDelayMs(200000), 240000);
+  assert.equal(wigleRetryDelayMs(240000), 240000);
 });
