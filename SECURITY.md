@@ -20,6 +20,8 @@ The golden rule: **secret-bearing API keys stay on the server side.** The dev/pr
 | `OPENAI_API_KEY` | Server only | Browser fetches a short-lived **ephemeral** Realtime session token from `/api/realtime/token`; the real key never ships |
 | `AISSTREAM_API_KEY` | Server only | Server holds the AISStream websocket; browser polls the same-origin `/api/ais-live` cache |
 | OpenSky OAuth (`OPENSKY_CLIENT_ID/SECRET`) | Server only | Server mints + refreshes the token behind `/api/opensky` |
+| `WIGLE_API_NAME` / `WIGLE_API_TOKEN` | Server only | Server does the Basic-Auth WiGLE query; browser fetches the same-origin `/api/wigle/search` cache |
+| `TAK_CLIENT_CERT_PATH` / `TAK_CLIENT_KEY_PATH` / `TAK_CLIENT_KEY_PASSPHRASE` | Server only (local file paths, never uploaded) | Server holds the one mutual-TLS TAK Server connection; browser polls the same-origin `/api/tak/events` cache |
 
 ### Two deliberately client-side keys — restrict them
 

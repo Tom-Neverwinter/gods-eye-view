@@ -19,6 +19,8 @@
  *  14. Rocket launches — recent Launch Library 2 mission metadata
  *  15. Radio Browser — public-domain station directory and click counting
  *  16. Meshtastic — public MQTT MapReport node cache (mqtt.meshtastic.org)
+ *  17. WiGLE — crowdsourced Wi-Fi network search (BYOK)
+ *  18. TAK / Cursor-on-Target — read-only mutual-TLS CoT ingest (BYOS)
  *
  * Also exposes Cesium and Google 3D Tiles API keys to the
  * client via `import.meta.env.*` defines.
@@ -45,6 +47,9 @@ import mqtt from 'mqtt';
 import { decodeMeshtasticMapReportEnvelope } from './src/data/meshtasticDecode.js';
 import { MESHTASTIC_NODE_EVICT_MS } from './src/data/meshtasticMapReport.js';
 import { isValidWigleViewport, normalizeWigleNetwork, wiglePacificDayKey } from './src/data/wigleApi.js';
+import tls from 'node:tls';
+import { decodeCotEvent, extractCotEvents } from './src/data/cotDecode.js';
+import { cotIsExpired } from './src/data/cotEvent.js';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { defineConfig, loadEnv } from 'vite';
@@ -5139,6 +5144,207 @@ function wigleProxy() {
   };
 }
 
+// TAK / Cursor-on-Target (CoT) read-only ingest — Phase 1 of issue #7
+// ---------------------------------------------------------------------------
+/**
+ * BYOS (bring your own server): God's Eye View never discovers or connects
+ * to a TAK Server without every one of these explicitly configured. No
+ * default/public TAK network exists to fall back to.
+ */
+const TAK_RECONNECT_MS = 15_000;
+const TAK_SWEEP_INTERVAL_MS = 60_000;
+const TAK_EVENT_CACHE_MAX = 4000;
+/** A connection that never yields a complete <event> within this many bytes
+ * is either not CoT or badly broken — drop the buffer rather than grow forever. */
+const TAK_MAX_BUFFER_BYTES = 2 * 1024 * 1024;
+
+let _takSocket = null;
+let _takBuffer = '';
+let _takConnected = false;
+let _takLastMessageAt = null;
+let _takLastError = null;
+let _takReconnectTimer = null;
+let _takSweepTimer = null;
+/** @type {Map<string, object>} CoT uid -> decoded event. In-memory ONLY — no
+ * disk persistence, so a restart drops all position history (see issue #7's
+ * "avoid persisting TAK position history unless explicitly configured"). */
+const _takEvents = new Map();
+
+function takConfig() {
+  const host = process.env.TAK_SERVER_HOST;
+  const certPath = process.env.TAK_CLIENT_CERT_PATH;
+  const keyPath = process.env.TAK_CLIENT_KEY_PATH;
+  if (!host || !certPath || !keyPath) return null;
+  const port = Number.parseInt(process.env.TAK_SERVER_PORT || '', 10);
+  return { host, port: Number.isFinite(port) && port > 0 ? port : 8089, certPath, keyPath };
+}
+
+function scheduleTakReconnect() {
+  if (_takReconnectTimer) return;
+  _takReconnectTimer = setTimeout(() => {
+    _takReconnectTimer = null;
+    ensureTakConnection();
+  }, TAK_RECONNECT_MS);
+  _takReconnectTimer.unref?.();
+}
+
+function connectTakSocket(config) {
+  let cert, key, ca;
+  try {
+    cert = fs.readFileSync(config.certPath);
+    key = fs.readFileSync(config.keyPath);
+    if (process.env.TAK_CA_CERT_PATH) ca = fs.readFileSync(process.env.TAK_CA_CERT_PATH);
+  } catch (err) {
+    _takLastError = `Failed to read TAK certificate/key: ${err.message}`;
+    scheduleTakReconnect();
+    return;
+  }
+  _takBuffer = '';
+  const socket = tls.connect({
+    host: config.host,
+    port: config.port,
+    cert,
+    key,
+    ca,
+    passphrase: process.env.TAK_CLIENT_KEY_PASSPHRASE || undefined,
+    rejectUnauthorized: true,
+  });
+  _takSocket = socket;
+  socket.setEncoding('utf8');
+
+  socket.on('secureConnect', () => {
+    _takConnected = true;
+    _takLastError = null;
+  });
+  socket.on('data', (chunk) => {
+    _takLastMessageAt = Date.now();
+    _takBuffer += chunk;
+    if (_takBuffer.length > TAK_MAX_BUFFER_BYTES) {
+      console.warn('[TAK Proxy] input buffer exceeded cap without a complete event; dropping it');
+      _takBuffer = '';
+      return;
+    }
+    const { events, remainder } = extractCotEvents(_takBuffer);
+    _takBuffer = remainder;
+    for (const xml of events) {
+      let record = null;
+      try {
+        record = decodeCotEvent(xml);
+      } catch {
+        // Malformed/unsupported event on the stream — skip it, keep reading.
+      }
+      if (!record) continue;
+      _takEvents.set(record.uid, record);
+      if (_takEvents.size > TAK_EVENT_CACHE_MAX) {
+        _takEvents.delete(_takEvents.keys().next().value);
+      }
+    }
+  });
+  socket.on('error', (err) => {
+    _takLastError = err?.message || 'TAK connection error';
+  });
+  socket.on('close', () => {
+    _takConnected = false;
+    _takSocket = null;
+    scheduleTakReconnect();
+  });
+
+  if (!_takSweepTimer) {
+    _takSweepTimer = setInterval(() => {
+      for (const [uid, record] of _takEvents) {
+        if (cotIsExpired(record.stale)) _takEvents.delete(uid);
+      }
+    }, TAK_SWEEP_INTERVAL_MS);
+    _takSweepTimer.unref?.();
+  }
+}
+
+/** Idempotent: a Vite in-process reload must never stack a second TAK connection. */
+function ensureTakConnection() {
+  if (_takSocket) return;
+  const config = takConfig();
+  if (!config) return; // not configured — the status/events endpoints report this
+  connectTakSocket(config);
+}
+
+function disposeTakConnection() {
+  clearTimeout(_takReconnectTimer);
+  _takReconnectTimer = null;
+  if (_takSweepTimer) {
+    clearInterval(_takSweepTimer);
+    _takSweepTimer = null;
+  }
+  if (_takSocket) {
+    _takSocket.destroy();
+    _takSocket = null;
+  }
+  _takConnected = false;
+}
+
+/**
+ * Vite plugin: TAK / Cursor-on-Target read-only ingest (Phase 1 of issue #7).
+ *
+ * Browsers can't hold a raw mutual-TLS socket or a private key, so the
+ * server keeps the one TAK Server connection and exposes a same-origin JSON
+ * snapshot. Read-only: this never sends anything onto the TAK stream (no
+ * Phase 2 publish, no client-presence announce) — it only decodes what the
+ * server sends.
+ */
+function takProxy() {
+  function install(middlewares) {
+    middlewares.use('/api/tak/status', (req, res) => {
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      res.setHeader('Cache-Control', 'no-store');
+      res.end(JSON.stringify({ configured: Boolean(takConfig()), connected: _takConnected }));
+    });
+    middlewares.use('/api/tak/events', (req, res) => {
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      res.setHeader('Cache-Control', 'no-store');
+      const config = takConfig();
+      if (!config) {
+        res.statusCode = 503;
+        res.end(JSON.stringify({
+          available: false, events: [],
+          error: 'TAK_SERVER_HOST/TAK_CLIENT_CERT_PATH/TAK_CLIENT_KEY_PATH not configured',
+        }));
+        return;
+      }
+      ensureTakConnection();
+      const now = Date.now();
+      const events = [];
+      for (const [uid, record] of _takEvents) {
+        if (cotIsExpired(record.stale, now)) { _takEvents.delete(uid); continue; }
+        events.push(record);
+      }
+      res.statusCode = 200;
+      res.end(JSON.stringify({
+        available: true,
+        events,
+        connected: _takConnected,
+        lastMessageAt: _takLastMessageAt,
+        error: _takLastError,
+        source: 'TAK Server (Cursor-on-Target)',
+      }));
+    });
+  }
+  return {
+    name: 'tak-proxy',
+    configureServer(server) {
+      install(server.middlewares);
+      ensureTakConnection();
+      server.httpServer?.on('close', disposeTakConnection);
+    },
+    configurePreviewServer(server) {
+      install(server.middlewares);
+      ensureTakConnection();
+      server.httpServer?.on('close', disposeTakConnection);
+    },
+    closeBundle() {
+      disposeTakConnection();
+    },
+  };
+}
+
 /**
  * Vite plugin: aircraft track-history backfill proxies (PRD WS-F F1/F2).
  *
@@ -7660,6 +7866,7 @@ export default defineConfig(({ mode }) => {
       aisLiveProxy(),
       meshtasticProxy(),
       wigleProxy(),
+      takProxy(),
       trackBackfillProxies(),
       openAiRealtimeProxy(),
       googlePlacesContextProxy(),

@@ -188,6 +188,9 @@ const LAYER_ALIASES = new Map([
   ['wigle', 'wigle-networks'],
   ['wifi networks', 'wigle-networks'],
   ['wi-fi networks', 'wigle-networks'],
+  ['tak', 'tak-events'],
+  ['cursor on target', 'tak-events'],
+  ['atak', 'tak-events'],
 ]);
 
 const CITY_ALIASES = new Map([
