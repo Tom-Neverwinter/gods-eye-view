@@ -4,6 +4,7 @@ import {
   nifcContainmentBucket,
   nifcMarkerSizePx,
   normalizeNifcIncident,
+  rankByAcresDesc,
 } from './nifcWildfires.js';
 
 // Real example shape from the WFIGS_Incident_Locations_Current FeatureServer.
@@ -63,4 +64,14 @@ test('nifcMarkerSizePx: grows with acreage but stays clamped', () => {
   const large = nifcMarkerSizePx(50000);
   assert.ok(small > 8 && small < large);
   assert.ok(large <= 28);
+});
+
+test('rankByAcresDesc: biggest first, missing acreage sorts last (not first)', () => {
+  const a = { id: 'a', acres: 10 };
+  const b = { id: 'b', acres: 5000 };
+  const c = { id: 'c', acres: null };
+  const d = { id: 'd', acres: 100 };
+  assert.deepEqual(rankByAcresDesc([a, b, c, d]).map((r) => r.id), ['b', 'd', 'a', 'c']);
+  // Does not mutate the input array.
+  assert.deepEqual([a, b, c, d].map((r) => r.id), ['a', 'b', 'c', 'd']);
 });

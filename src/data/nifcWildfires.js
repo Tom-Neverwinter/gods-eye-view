@@ -33,6 +33,9 @@ const OUT_FIELDS = [
 
 export const NIFC_OVERLAY_SOURCE_ID = 'nifc-wildfires';
 const POLL_INTERVAL_MS = 5 * 60 * 1000;
+/** Matches every sibling non-viewport-bounded layer (alprCameras.js, meshtasticNodes.js,
+ * militaryInstallations.js, takEvents.js, wigleNetworks.js) capping rendered entities. */
+const MAX_RENDERED = 500;
 const CONTAINMENT_COLOR = {
   uncontained: '#ff4d4d',
   partial: '#ffa63f',
@@ -109,7 +112,19 @@ const state = {
   lastUpdate: null,
   error: null,
   clickHandler: null,
+  abort: null,
 };
+
+/** Biggest/most-significant incidents first, so a MAX_RENDERED cap truncates
+ * the smallest ones — mirrors earthquakes.js ranking by magnitude. Missing
+ * acreage sorts last rather than first (an unknown size is not "small"). */
+export function rankByAcresDesc(records) {
+  return records.slice().sort((a, b) => {
+    const aAcres = Number.isFinite(a.acres) ? a.acres : -1;
+    const bAcres = Number.isFinite(b.acres) ? b.acres : -1;
+    return bAcres - aAcres;
+  });
+}
 
 function colorFor(record) {
   return Cesium.Color.fromCssColorString(CONTAINMENT_COLOR[nifcContainmentBucket(record.percentContained)]);
@@ -123,7 +138,7 @@ function clearRendered() {
 function renderRecords() {
   governorRequestRender('nifc-render');
   clearRendered();
-  for (const record of state.records) {
+  for (const record of state.records.slice(0, MAX_RENDERED)) {
     const color = colorFor(record);
     const selected = record.id === state.selectedId;
     const position = Cesium.Cartesian3.fromDegrees(record.longitude, record.latitude);
@@ -193,20 +208,26 @@ function installInteraction(viewer) {
 
 async function loadIncidents() {
   if (!state.enabled) return;
+  state.abort?.abort();
+  const requestAbort = new AbortController();
+  state.abort = requestAbort;
   try {
-    const response = await fetch(buildQueryUrl());
-    if (!state.enabled || !state.dataSource) return; // torn down while in flight
+    const response = await fetch(buildQueryUrl(), { signal: requestAbort.signal });
+    // Checked immediately after each await, before any state write: a
+    // superseded poll (e.g. disable+re-enable while an old request is still
+    // in flight) must not overwrite a newer request's already-rendered result.
+    if (requestAbort.signal.aborted || state.abort !== requestAbort || !state.enabled) return;
     if (!response.ok) {
       state.error = `NIFC feed HTTP ${response.status}`;
       return;
     }
     const geojson = await response.json();
-    if (!state.enabled || !state.dataSource) return; // torn down while in flight
+    if (requestAbort.signal.aborted || state.abort !== requestAbort || !state.enabled) return;
     if (!geojson || !Array.isArray(geojson.features)) {
       state.error = 'Malformed NIFC response';
       return;
     }
-    const records = geojson.features.map(normalizeNifcIncident).filter(Boolean);
+    const records = rankByAcresDesc(geojson.features.map(normalizeNifcIncident).filter(Boolean));
     state.records = records;
     state.recordById = new Map(records.map((r) => [r.id, r]));
     state.lastUpdate = Date.now();
@@ -221,7 +242,10 @@ async function loadIncidents() {
     renderRecords();
     return true;
   } catch (e) {
+    if (e?.name === 'AbortError') return;
     state.error = 'NIFC feed network error';
+  } finally {
+    if (state.abort === requestAbort) state.abort = null;
   }
 }
 
@@ -246,6 +270,8 @@ const nifcWildfiresLayer = {
   disable() {
     state.enabled = false;
     unregisterPickOwner(NIFC_OVERLAY_SOURCE_ID);
+    state.abort?.abort();
+    state.abort = null;
     if (state.dataSource) state.dataSource.show = false;
     clearSelectedEntityContextForLayer(NIFC_OVERLAY_SOURCE_ID);
     state.selectedId = null;
