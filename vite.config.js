@@ -5161,9 +5161,15 @@ function wigleProxy() {
 const TAK_RECONNECT_MS = 15_000;
 const TAK_SWEEP_INTERVAL_MS = 60_000;
 const TAK_EVENT_CACHE_MAX = 4000;
-/** A connection that never yields a complete <event> within this many bytes
- * is either not CoT or badly broken — drop the buffer rather than grow forever. */
-const TAK_MAX_BUFFER_BYTES = 2 * 1024 * 1024;
+/**
+ * A connection that never yields a complete <event> within this many
+ * characters is either not CoT or badly broken — drop the buffer rather
+ * than grow forever. Measured in JS string length (UTF-16 code units), not
+ * true UTF-8 bytes — a coarse safety backstop, not a precise byte budget,
+ * so that slop doesn't matter; checking real byte size on every chunk isn't
+ * worth the repeated re-encoding cost.
+ */
+const TAK_MAX_BUFFER_CHARS = 2 * 1024 * 1024;
 
 let _takSocket = null;
 let _takBuffer = '';
@@ -5226,7 +5232,7 @@ function connectTakSocket(config) {
   socket.on('data', (chunk) => {
     _takLastMessageAt = Date.now();
     _takBuffer += chunk;
-    if (_takBuffer.length > TAK_MAX_BUFFER_BYTES) {
+    if (_takBuffer.length > TAK_MAX_BUFFER_CHARS) {
       console.warn('[TAK Proxy] input buffer exceeded cap without a complete event; dropping it');
       _takBuffer = '';
       return;
@@ -5241,6 +5247,11 @@ function connectTakSocket(config) {
         // Malformed/unsupported event on the stream — skip it, keep reading.
       }
       if (!record) continue;
+      // delete-then-set so an update to an EXISTING uid moves it to the
+      // "most recent" end too — a Map's set() on an existing key does not
+      // reorder it, so without this the overflow eviction below would be
+      // oldest-INSERTED, not oldest-SEEN.
+      _takEvents.delete(record.uid);
       _takEvents.set(record.uid, record);
       if (_takEvents.size > TAK_EVENT_CACHE_MAX) {
         _takEvents.delete(_takEvents.keys().next().value);

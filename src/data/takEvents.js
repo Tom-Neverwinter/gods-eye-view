@@ -135,10 +135,16 @@ function installInteraction(viewer) {
 }
 
 async function loadEvents() {
-  if (!state.enabled) return false;
+  // A `false` return is a manager.js contract: DURING the enable transition
+  // it's treated as a fatal enable failure that bounces the toggle back
+  // off — wrong for "not configured", which is the common case for this
+  // BYOS layer and must stay enabled and read UNAVAILABLE via getStats().
+  // Only ever resolve true (success) or undefined; never false.
+  if (!state.enabled) return;
   try {
     const response = await fetch(API_URL);
     const payload = await response.json();
+    if (!state.enabled || !state.dataSource) return; // torn down while in flight
     state.configured = payload?.available !== false;
     if (!state.configured) {
       state.error = payload?.error || 'TAK Server not configured';
@@ -146,7 +152,7 @@ async function loadEvents() {
       state.recordById = new Map();
       state.connected = false;
       renderRecords();
-      return false;
+      return;
     }
     const records = Array.isArray(payload?.events) ? payload.events : [];
     state.records = records;
@@ -158,7 +164,6 @@ async function loadEvents() {
     return true;
   } catch (e) {
     state.error = 'TAK feed network error';
-    return false;
   }
 }
 
