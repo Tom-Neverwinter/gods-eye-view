@@ -204,6 +204,10 @@ const LAYER_ALIASES = new Map([
   ['ski slopes', 'osm-overlays'],
   ['snow map', 'osm-overlays'],
   ['opensnowmap', 'osm-overlays'],
+  ['rayhunter', 'rayhunter-tap'],
+  ['stingray detector', 'rayhunter-tap'],
+  ['imsi catcher detector', 'rayhunter-tap'],
+  ['cell site simulator detector', 'rayhunter-tap'],
 ]);
 
 const CITY_ALIASES = new Map([
