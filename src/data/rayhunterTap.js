@@ -251,7 +251,16 @@ async function pollDevice() {
       state.seenKeys.add(warning.key);
       state.warnings.unshift({ ...warning, position: state.position });
     }
-    if (state.warnings.length > MAX_RENDERED) state.warnings.length = MAX_RENDERED;
+    if (state.warnings.length > MAX_RENDERED) {
+      state.warnings.length = MAX_RENDERED;
+      // seenKeys must stay bounded together with the list it dedups against —
+      // this is a long-lived, always-on personal layer (polls every 15s
+      // indefinitely), so an unbounded seenKeys would grow for the life of the
+      // tab. Every other layer's dedup set is either scoped to one fetch or
+      // capped alongside its render list (alprCameras.js, nifcWildfires.js);
+      // rebuilding from the survivors matches that.
+      state.seenKeys = new Set(state.warnings.map((w) => w.key));
+    }
     // A warning first seen before any location fix arrived would otherwise be
     // stuck at position:null forever (renderWarnings() skips unplaced
     // warnings) even after a fix DOES arrive on a later poll. Backfill it with
@@ -320,7 +329,10 @@ const rayhunterTapLayer = {
   getRowControls() {
     if (!state.enabled) return { chips: [], legend: [] };
     const counts = { Low: 0, Medium: 0, High: 0 };
-    for (const w of state.warnings) counts[w.severity] += 1;
+    // Only warnings with a pin actually on the globe — a warning still
+    // waiting on its first location fix (renderWarnings() skips it) must not
+    // inflate a count sitting right next to zero visible pins.
+    for (const w of state.warnings) if (w.position) counts[w.severity] += 1;
     return {
       chips: [{
         id: 'set-base',
@@ -358,7 +370,10 @@ const rayhunterTapLayer = {
   },
   getStats() {
     return {
-      count: state.warnings.length,
+      // Matches the legend above: a warning still waiting on its first
+      // location fix has no pin on the globe yet, so it doesn't count as
+      // "shown" either — state.error already explains the gap while it lasts.
+      count: state.warnings.filter((w) => w.position).length,
       lastUpdate: state.lastUpdate,
       error: state.error,
     };
