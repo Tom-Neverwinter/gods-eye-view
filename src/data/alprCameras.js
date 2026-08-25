@@ -68,6 +68,8 @@ function textTag(value) {
 }
 
 function numTag(value) {
+  // `Number('')` is 0, not NaN — a blank tag value must read as missing.
+  if (value === '' || value == null) return null;
   const n = Number(value);
   return Number.isFinite(n) ? n : null;
 }
