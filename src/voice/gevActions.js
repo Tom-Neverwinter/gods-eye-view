@@ -182,6 +182,9 @@ const LAYER_ALIASES = new Map([
   ['license plate readers', 'alpr-cameras'],
   ['license plate cameras', 'alpr-cameras'],
   ['plate readers', 'alpr-cameras'],
+  ['meshtastic', 'meshtastic-nodes'],
+  ['mesh nodes', 'meshtastic-nodes'],
+  ['mesh network', 'meshtastic-nodes'],
 ]);
 
 const CITY_ALIASES = new Map([
