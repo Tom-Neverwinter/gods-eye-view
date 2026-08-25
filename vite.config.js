@@ -4924,6 +4924,37 @@ let _takSweepTimer = null;
  * "avoid persisting TAK position history unless explicitly configured"). */
 const _takEvents = new Map();
 
+/**
+ * Map a TAK connection/cert-read failure to a generic, safe status message.
+ *
+ * `/api/tak/events` promises (SECURITY.md, .env.example) that the browser
+ * never sees the configured host, port, or certificate paths — but Node's
+ * raw `err.message` for common failures embeds exactly that (e.g. "connect
+ * ECONNREFUSED 10.0.0.5:8089", or an fs ENOENT naming the cert file path).
+ * `err.code` is a stable, target-independent Node error identifier — safe
+ * to surface as-is; the human-readable message built from it never is.
+ * @param {NodeJS.ErrnoException} err
+ * @returns {string}
+ */
+export function sanitizeTakConnectionError(err) {
+  const KNOWN = {
+    ECONNREFUSED: 'TAK Server refused the connection',
+    ENOTFOUND: 'TAK Server hostname could not be resolved',
+    ETIMEDOUT: 'TAK Server connection timed out',
+    ECONNRESET: 'TAK Server connection was reset',
+    EHOSTUNREACH: 'TAK Server host is unreachable',
+    ENETUNREACH: 'TAK network is unreachable',
+    ENOENT: 'TAK certificate/key file not found on the server',
+    EACCES: 'TAK certificate/key file is not readable by the server',
+    CERT_HAS_EXPIRED: 'TAK Server certificate has expired',
+    DEPTH_ZERO_SELF_SIGNED_CERT: 'TAK Server certificate is self-signed (configure TAK_CA_CERT_PATH)',
+    UNABLE_TO_VERIFY_LEAF_SIGNATURE: 'TAK Server certificate could not be verified (configure TAK_CA_CERT_PATH)',
+    ERR_TLS_CERT_ALTNAME_INVALID: 'TAK Server certificate does not match the configured hostname',
+  };
+  const code = err?.code;
+  return (code && KNOWN[code]) || 'TAK connection error';
+}
+
 function takConfig() {
   const host = process.env.TAK_SERVER_HOST;
   const certPath = process.env.TAK_CLIENT_CERT_PATH;
@@ -4949,7 +4980,10 @@ function connectTakSocket(config) {
     key = fs.readFileSync(config.keyPath);
     if (process.env.TAK_CA_CERT_PATH) ca = fs.readFileSync(process.env.TAK_CA_CERT_PATH);
   } catch (err) {
-    _takLastError = `Failed to read TAK certificate/key: ${err.message}`;
+    // Full detail (including the file path) stays in the server's own log;
+    // only the sanitized category crosses into the browser-facing API.
+    console.warn('[TAK Proxy] certificate/key read failed:', err?.message || err);
+    _takLastError = `Failed to read TAK certificate/key: ${sanitizeTakConnectionError(err)}`;
     scheduleTakReconnect();
     return;
   }
@@ -5000,7 +5034,11 @@ function connectTakSocket(config) {
     }
   });
   socket.on('error', (err) => {
-    _takLastError = err?.message || 'TAK connection error';
+    // Full detail (host/port are literally in Node's TLS/net error message)
+    // stays in the server's own log; only the sanitized category crosses
+    // into the browser-facing API.
+    console.warn('[TAK Proxy] connection error:', err?.message || err);
+    _takLastError = sanitizeTakConnectionError(err);
   });
   socket.on('close', () => {
     _takConnected = false;
@@ -5020,7 +5058,12 @@ function connectTakSocket(config) {
 
 /** Idempotent: a Vite in-process reload must never stack a second TAK connection. */
 function ensureTakConnection() {
-  if (_takSocket) return;
+  // A pending reconnect timer means a connect attempt is already scheduled
+  // on its own backoff — an /api/tak/events poll landing in that gap must
+  // not race it into an extra immediate connect (each one re-reads the
+  // cert/key files synchronously and opens a second TLS handshake against
+  // the remote server, roughly doubling reconnect attempts during an outage).
+  if (_takSocket || _takReconnectTimer) return;
   const config = takConfig();
   if (!config) return; // not configured — the status/events endpoints report this
   connectTakSocket(config);
