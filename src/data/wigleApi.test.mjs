@@ -56,6 +56,12 @@ test('normalizeWigleNetwork: rejects untriangulated (0,0) or missing coordinates
   assert.equal(normalizeWigleNetwork(null), null);
 });
 
+test('normalizeWigleNetwork: a present-but-blank channel/qos reads as missing, not zero', () => {
+  const record = normalizeWigleNetwork({ ...SAMPLE_RESULT, channel: '', qos: '' });
+  assert.equal(record.channel, null);
+  assert.equal(record.qos, null);
+});
+
 test('wigleNetworkFreshness: buckets by age in days', () => {
   const now = Date.parse('2026-08-24T00:00:00.000Z');
   assert.equal(wigleNetworkFreshness('2026-08-01T00:00:00.000Z', now), 'recent');
