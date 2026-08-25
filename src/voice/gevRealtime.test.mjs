@@ -26,6 +26,8 @@ import {
   readStoredVoiceLimits,
   writeStoredVoiceTier,
   writeStoredVoiceLimits,
+  readStoredRadioToVoiceEnabled,
+  writeStoredRadioToVoiceEnabled,
 } from './gevRealtime.js';
 import { createVoiceCostTracker } from './voiceCost.js';
 
@@ -97,6 +99,16 @@ test('voice activation, speech, and push-to-talk pause Radio without an idle aut
   assert.equal(shouldPauseRadioForVoice({ status: 'listening' }), false);
   assert.equal(shouldPauseRadioForVoice({ status: 'idle' }), false);
   assert.equal(shouldPauseRadioForVoice({ status: 'error' }), false);
+});
+
+test('#52: radioToVoiceEnabled overrides every pause condition, never the reverse', () => {
+  assert.equal(shouldPauseRadioForVoice({ status: 'connecting', radioToVoiceEnabled: true }), false);
+  assert.equal(shouldPauseRadioForVoice({ status: 'executing', radioToVoiceEnabled: true }), false);
+  assert.equal(shouldPauseRadioForVoice({ speaker: 'user', radioToVoiceEnabled: true }), false);
+  assert.equal(shouldPauseRadioForVoice({ speaker: 'ai', radioToVoiceEnabled: true }), false);
+  assert.equal(shouldPauseRadioForVoice({ pushToTalkKeyHeld: true, radioToVoiceEnabled: true }), false);
+  // Toggle off (the default) must reproduce today's behavior exactly.
+  assert.equal(shouldPauseRadioForVoice({ status: 'connecting', radioToVoiceEnabled: false }), true);
 });
 
 test('successful Radio activation tools close voice after handing control to Radio', () => {
@@ -2621,6 +2633,33 @@ test('a storage that throws never breaks the mic', () => {
   assert.equal(readStoredVoiceTier(hostile), 'standard');
   assert.equal(writeStoredVoiceTier('mini', hostile), 'mini');
   assert.deepEqual(readStoredVoiceLimits(hostile), { warnUsd: 2, capUsd: 5 });
+});
+
+test('#52: radio-to-voice capture preference round-trips and defaults off', () => {
+  const storage = fakeVoiceStorage();
+  assert.equal(readStoredRadioToVoiceEnabled(storage), false, 'unset reads as off');
+  assert.equal(writeStoredRadioToVoiceEnabled(true, storage), true);
+  assert.equal(readStoredRadioToVoiceEnabled(storage), true);
+  assert.equal(writeStoredRadioToVoiceEnabled(false, storage), false);
+  assert.equal(readStoredRadioToVoiceEnabled(storage), false);
+  // Hand-edited garbage must never read back as enabled.
+  assert.equal(
+    readStoredRadioToVoiceEnabled(fakeVoiceStorage({ 'godsEyeView.voice.radioToVoiceEnabled': 'yes' })),
+    false,
+  );
+});
+
+test('#52: a storage that throws never breaks the mic', () => {
+  const hostile = {
+    getItem() {
+      throw new Error('SecurityError');
+    },
+    setItem() {
+      throw new Error('SecurityError');
+    },
+  };
+  assert.equal(readStoredRadioToVoiceEnabled(hostile), false);
+  assert.equal(writeStoredRadioToVoiceEnabled(true, hostile), true);
 });
 
 test('spend limits round-trip as one object', () => {
