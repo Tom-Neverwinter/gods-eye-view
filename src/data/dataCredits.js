@@ -74,6 +74,18 @@ export const DATA_CREDITS = [
       '(U.S. public domain)',
   },
   {
+    key: 'openseamap',
+    html:
+      'Sea marks overlay: ' +
+      '<a href="https://www.openseamap.org" target="_blank" rel="noopener">© OpenSeaMap contributors</a>',
+  },
+  {
+    key: 'opensnowmap',
+    html:
+      'Ski pistes overlay: Map data © OpenStreetMap contributors, SRTM | Map style © ' +
+      '<a href="https://www.opensnowmap.org" target="_blank" rel="noopener">OpenSnowMap.org</a> (CC BY-SA)',
+  },
+  {
     key: 'overpass',
     html:
       'Road geometry (traffic): ' +
