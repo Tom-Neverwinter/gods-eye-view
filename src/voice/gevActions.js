@@ -191,6 +191,9 @@ const LAYER_ALIASES = new Map([
   ['tak', 'tak-events'],
   ['cursor on target', 'tak-events'],
   ['atak', 'tak-events'],
+  ['wildfires', 'nifc-wildfires'],
+  ['wildfire incidents', 'nifc-wildfires'],
+  ['nifc', 'nifc-wildfires'],
 ]);
 
 const CITY_ALIASES = new Map([
