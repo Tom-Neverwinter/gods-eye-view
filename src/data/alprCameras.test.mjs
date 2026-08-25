@@ -57,6 +57,17 @@ test('normalizeAlprNode: rejects non-node elements and missing coordinates', () 
   assert.equal(normalizeAlprNode({ type: 'node', id: 1, lat: NaN, lon: 1, tags: {} }), null);
 });
 
+test('normalizeAlprNode: a present-but-blank direction tag reads as missing, not zero', () => {
+  const record = normalizeAlprNode({
+    type: 'node',
+    id: 1,
+    lat: 30,
+    lon: -97,
+    tags: { man_made: 'surveillance', 'surveillance:type': 'ALPR', 'camera:direction': '' },
+  });
+  assert.equal(record.directionDeg, null);
+});
+
 test('destinationPointDeg: due-north offset increases latitude, keeps longitude', () => {
   const dest = destinationPointDeg(30, -97, 0, 100);
   assert.ok(dest.latitude > 30);
