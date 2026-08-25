@@ -80,6 +80,15 @@ test('decodeCotEvent: rejects an event missing uid or type', () => {
   assert.equal(decodeCotEvent('<event uid="x"><point lat="1" lon="1"/></event>'), null);
 });
 
+test('decodeCotEvent: a present-but-blank numeric attribute reads as missing, not zero', () => {
+  const xml = '<event uid="x" type="a-f-G"><point lat="10" lon="20" hae=""/>'
+    + '<detail><track course="" speed="1.5"/></detail></event>';
+  const record = decodeCotEvent(xml);
+  assert.equal(record.hae, null);
+  assert.equal(record.course, null);
+  assert.equal(record.speed, 1.5);
+});
+
 test('extractCotEvents: splits multiple events in one chunk', () => {
   const { events, remainder } = extractCotEvents(FRIENDLY_UNIT_XML + SELF_CLOSING_XML);
   assert.equal(events.length, 2);

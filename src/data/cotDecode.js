@@ -82,12 +82,20 @@ export function decodeCotEvent(xmlString) {
   const takv = detail.takv || {};
   const track = detail.track || {};
   const status = detail.status || {};
-  const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : null; };
+  // `Number('')` is 0, not NaN — an empty (present-but-blank) attribute must
+  // read as missing, not as a real zero value (0 altitude, 0° heading, ...).
+  const num = (v) => {
+    if (v === '' || v == null) return null;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  };
 
   let detailRaw = null;
   try {
     const json = JSON.stringify(detail);
-    if (json && json.length <= MAX_DETAIL_JSON_BYTES) detailRaw = detail;
+    // .length is UTF-16 code units, not bytes — a non-ASCII callsign etc.
+    // could run ~2x that in real UTF-8 bytes, so measure the actual bytes.
+    if (json && Buffer.byteLength(json, 'utf8') <= MAX_DETAIL_JSON_BYTES) detailRaw = detail;
   } catch {
     // Non-serializable detail (shouldn't happen from an XML parse) — drop
     // the passthrough, keep the well-known fields below.
