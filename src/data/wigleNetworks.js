@@ -185,6 +185,11 @@ async function loadNetworks() {
     const query = new URLSearchParams(Object.entries(box).map(([k, v]) => [k, v.toFixed(5)]));
     const response = await fetch(`${API_URL}?${query}`, { signal: requestAbort.signal });
     const payload = await response.json();
+    // Checked immediately after both awaits, before any state write: a
+    // superseded request whose body had already fully arrived before
+    // abort() took effect resolves without ever throwing AbortError, and
+    // must not clobber the newer request's already-rendered result.
+    if (requestAbort.signal.aborted || state.abort !== requestAbort || !state.enabled) return;
     state.hasKey = payload?.available !== false;
     if (!state.hasKey) {
       state.status = 'unavailable';
@@ -194,8 +199,11 @@ async function loadNetworks() {
       renderRecords();
       return;
     }
-    if (!response.ok) throw new Error(payload?.error || `WiGLE feed HTTP ${response.status}`);
-    if (requestAbort.signal.aborted || state.abort !== requestAbort || !state.enabled) return;
+    if (!response.ok) {
+      const err = new Error(payload?.error || `WiGLE feed HTTP ${response.status}`);
+      err.status = response.status;
+      throw err;
+    }
     const records = Array.isArray(payload?.networks) ? payload.networks : [];
     state.records = records;
     state.recordById = new Map(records.map((r) => [r.id, r]));
@@ -211,8 +219,17 @@ async function loadNetworks() {
   } catch (error) {
     if (error?.name === 'AbortError') return;
     state.status = 'unavailable';
-    state.error = error?.message || 'WiGLE feed unavailable';
-    scheduleUnavailableRetry();
+    if (error?.status === 429) {
+      // The daily query budget is exhausted server-side and only rolls
+      // over at the next US/Pacific midnight — an escalating retry timer
+      // can't succeed before then, so skip it and just say why; the next
+      // user-driven pan/zoom (moveEnd) will naturally try again.
+      state.error = error?.message || 'WiGLE daily query budget exhausted';
+      clearUnavailableRetry();
+    } else {
+      state.error = error?.message || 'WiGLE feed unavailable';
+      scheduleUnavailableRetry();
+    }
   } finally {
     if (state.abort === requestAbort) {
       state.abort = null;

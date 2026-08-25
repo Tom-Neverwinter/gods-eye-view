@@ -40,6 +40,12 @@ import {
   utcDayKey as tomtomUtcDayKey,
   normalizeBudget as normalizeTomTomBudget,
   isOverBudget as isTomTomOverBudget,
+  // Same two generic ("roll on day change, compare to a limit") helpers,
+  // imported again under their own names — wigleProxy() below uses these,
+  // not the TomTom-aliased bindings, so a reader never has to wonder why
+  // WiGLE code is calling something named "TomTom".
+  normalizeBudget as normalizeDailyBudget,
+  isOverBudget as isOverDailyBudget,
 } from './src/data/tomtomTiles.js';
 import { filterTrailing24h, parseFirmsCsv } from './src/data/firmsCsv.js';
 import { isValidWigleViewport, normalizeWigleNetwork, wiglePacificDayKey } from './src/data/wigleApi.js';
@@ -4915,18 +4921,20 @@ function wigleProxy() {
   const mem = new Map();
   /** @type {Map<string, Promise<object>>} */
   const inFlight = new Map();
-  let dailyCount = 0;
-  let dailyKey = null;
+  // Same "roll the counter on day change, compare to a limit" shape as
+  // TomTom's tile budget — reuse its tested pure helpers (normalizeBudget
+  // accepts any day-key generator, so passing WiGLE's Pacific-midnight key
+  // here is correct) rather than a second untested hand-rolled copy.
+  let wigleBudget = { date: '', count: 0 };
 
   function dailyBudgetLimit() {
     const raw = Number.parseInt(process.env.WIGLE_DAILY_QUERY_BUDGET || '', 10);
     return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_DAILY_BUDGET;
   }
 
-  function underDailyBudget() {
-    const key = wiglePacificDayKey();
-    if (key !== dailyKey) { dailyKey = key; dailyCount = 0; }
-    return dailyCount < dailyBudgetLimit();
+  function currentWigleBudget() {
+    wigleBudget = normalizeDailyBudget(wigleBudget, wiglePacificDayKey());
+    return wigleBudget;
   }
 
   function diskPath(cacheKey) {
@@ -4961,12 +4969,12 @@ function wigleProxy() {
     if (existing) return existing;
 
     const request = (async () => {
-      if (!underDailyBudget()) {
+      if (isOverDailyBudget(currentWigleBudget(), dailyBudgetLimit())) {
         const err = new Error('WiGLE daily query budget exhausted for this server');
         err.status = 429;
         throw err;
       }
-      dailyCount += 1;
+      currentWigleBudget().count += 1;
       const auth = Buffer.from(`${process.env.WIGLE_API_NAME}:${process.env.WIGLE_API_TOKEN}`).toString('base64');
       // freenet/paynet deliberately omitted — their true/false semantics
       // aren't reliably documented and an untested guess risks silently
