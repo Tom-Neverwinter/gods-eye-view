@@ -78,6 +78,10 @@ export const DATA_CREDITS = [
     html:
       'Keyless place search: ' +
       '<a href="https://photon.komoot.io" target="_blank" rel="noopener">Photon</a> (komoot) over ' +
+    key: 'alpr-osm',
+    html:
+      'ALPR / Flock camera locations: ' +
+      '<a href="https://deflock.me" target="_blank" rel="noopener">DeFlock</a> contributors via ' +
       '<a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">© OpenStreetMap contributors</a> ' +
       '(ODbL 1.0)',
   },
