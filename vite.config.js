@@ -2167,6 +2167,49 @@ function rayhunterProxy() {
 }
 
 /**
+ * fetch() replacement that forces IPv4-only connections (#68). Node's
+ * default dual-stack "network family autoselection" can stall for a full
+ * connect timeout — then fail the whole request — on a network where DNS
+ * still returns an AAAA record but IPv6 itself is unrouted (ENETUNREACH),
+ * even though IPv4 to the same host works fine. `family: 4` on the
+ * underlying `net.connect` skips that race entirely by only ever resolving
+ * and dialing the A record. Scoped to the one upstream (FIRMS) this was
+ * reported against, rather than the process-wide `NODE_OPTIONS
+ * --no-network-family-autoselection`, which would change every proxy's
+ * connection behavior for one host's routing problem.
+ * @param {string} url
+ * @param {{signal?: AbortSignal}} [options]
+ * @returns {Promise<Response>}
+ */
+export function fetchIpv4Only(url, { signal } = {}) {
+  return new Promise((resolve, reject) => {
+    const request = https.request(url, { method: 'GET', family: 4, signal }, (response) => {
+      const headers = new Headers();
+      for (const [name, value] of Object.entries(response.headers)) {
+        if (Array.isArray(value)) value.forEach((item) => headers.append(name, item));
+        else if (value !== undefined) headers.set(name, String(value));
+      }
+      resolve(new Response(Readable.toWeb(response), {
+        status: response.statusCode || 500,
+        statusText: response.statusMessage || '',
+        headers,
+      }));
+    });
+    request.on('error', reject);
+    request.end();
+  });
+}
+
+/** Fold `error.cause` into a loggable string — a fetch()-originated TypeError's
+ * `.message` is always the unhelpful "fetch failed"; the actual reason
+ * (ETIMEDOUT, ENETUNREACH, ...) lives on `.cause` and was previously dropped
+ * from every FIRMS proxy log line (#68). */
+export function describeFetchError(err) {
+  const cause = err?.cause?.message || err?.cause?.code;
+  return cause ? `${err?.message || err}: ${cause}` : (err?.message || String(err));
+}
+
+/**
  * NASA FIRMS live active-fire proxy with a memory + disk cache.
  * Upstream: https://firms.modaps.eosdis.nasa.gov/api/area/csv/{KEY}/{SOURCE}/world/2
  *
@@ -2234,7 +2277,7 @@ function firmsProxy() {
    */
   async function fetchSource(key, source) {
     const url = `https://firms.modaps.eosdis.nasa.gov/api/area/csv/${encodeURIComponent(key)}/${source}/world/2`;
-    const res = await fetch(url, { signal: AbortSignal.timeout(60_000) });
+    const res = await fetchIpv4Only(url, { signal: AbortSignal.timeout(60_000) });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const records = parseFirmsCsv(await res.text());
     if (records === null) throw new Error('non-CSV upstream response');
@@ -2257,7 +2300,7 @@ function firmsProxy() {
         sources.push({ source, count: records.length, ok: true });
         fires.push(...records);
       } catch (err) {
-        console.warn(`[firms-proxy] ${source} fetch failed:`, err?.message || err);
+        console.warn(`[firms-proxy] ${source} fetch failed:`, describeFetchError(err));
         sources.push({ source, count: 0, ok: false });
       }
     }
@@ -2291,14 +2334,14 @@ function firmsProxy() {
       statusInflight = (async () => {
         try {
           const url = `https://firms.modaps.eosdis.nasa.gov/mapserver/mapkey_status/?MAP_KEY=${encodeURIComponent(key)}`;
-          const res = await fetch(url, { signal: AbortSignal.timeout(10_000) });
+          const res = await fetchIpv4Only(url, { signal: AbortSignal.timeout(10_000) });
           if (!res.ok) throw new Error(`HTTP ${res.status}`);
           const body = await res.json();
           const used = Number(body?.current_transactions);
           const limit = Number(body?.transaction_limit);
           return Number.isFinite(used) && Number.isFinite(limit) ? { used, limit } : null;
         } catch (err) {
-          console.warn('[firms-proxy] mapkey status failed:', err?.message || err);
+          console.warn('[firms-proxy] mapkey status failed:', describeFetchError(err));
           return null;
         }
       })()
@@ -2363,7 +2406,7 @@ function firmsProxy() {
                 return fresh;
               })
               .catch((err) => {
-                console.warn(`[firms-proxy] refresh failed (${err?.message || err}) — serving cache if any`);
+                console.warn(`[firms-proxy] refresh failed (${describeFetchError(err)}) — serving cache if any`);
                 return null;
               })
               .finally(() => { inflight = null; });
@@ -2378,7 +2421,7 @@ function firmsProxy() {
             sendJson(502, { error: 'firms fetch failed and no cache available' });
           }
         } catch (err) {
-          console.warn('[firms-proxy] error:', err?.message || err);
+          console.warn('[firms-proxy] error:', describeFetchError(err));
           sendJson(500, { error: 'firms proxy error' });
         }
       });
