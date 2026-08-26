@@ -234,16 +234,17 @@ function satisfiesEngines(version, range) {
 }
 
 /**
- * Does a `node --version` string name the runtime the allocation budgets are
+ * Does a `node --version` string name a runtime the allocation budgets are
  * calibrated for? A3 pins the binary it actually invoked, because npm can
  * re-resolve the interpreter from PATH and hand the gate a different Node than
  * the one the check believes it selected.
  * @param {string} version e.g. "v24.19.0"
- * @returns {boolean} true only for a parseable Node 24.
+ * @returns {boolean} true only for a parseable Node 24 or 26 (see #39: real
+ *   26.8.0 medians were measured to fit the existing Node-24 budgets).
  */
 function isCalibratedAllocationRuntime(version) {
   const [maj] = String(version || '').trim().replace(/^v/, '').split('.').map((n) => Number.parseInt(n, 10));
-  return maj === 24;
+  return maj === 24 || maj === 26;
 }
 
 /**
