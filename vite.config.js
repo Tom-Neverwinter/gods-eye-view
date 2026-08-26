@@ -33,6 +33,7 @@ import { promises as fsp } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { Readable } from 'node:stream';
+import http from 'node:http';
 import https from 'node:https';
 import { lookup as lookupDns } from 'node:dns/promises';
 import { directionToHeading } from './src/data/directionText.js';
@@ -3524,24 +3525,37 @@ function gbfsProxy() {
                 'User-Agent': 'gods-eye-view-gbfs-proxy/1.0',
               },
               signal: controller.signal,
+              // A redirect off an allowlisted host/path would otherwise be
+              // followed without re-validation (#30) — refuse it outright,
+              // same policy as the radio proxy.
+              redirect: 'manual',
             });
           } finally {
             clearTimeout(timeoutId);
           }
-
-          // Limit response size to prevent memory exhaustion from malicious upstream
-          const GBFS_MAX_BODY_BYTES = 5 * 1024 * 1024; // 5 MB
-          const contentLength = Number(upstream.headers.get('content-length'));
-          if (Number.isFinite(contentLength) && contentLength > GBFS_MAX_BODY_BYTES) {
+          if (upstream.status >= 300 && upstream.status < 400) {
+            try { await upstream.body?.cancel?.(); } catch { /* no-op */ }
             res.writeHead(502, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
-            res.end(JSON.stringify({ error: 'GBFS upstream response too large' }));
+            res.end(JSON.stringify({ error: 'GBFS upstream redirects are refused' }));
             return;
           }
-          const body = await upstream.text();
-          if (body.length > GBFS_MAX_BODY_BYTES) {
-            res.writeHead(502, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
-            res.end(JSON.stringify({ error: 'GBFS upstream response too large' }));
-            return;
+
+          // Limit response size to prevent memory exhaustion from malicious upstream.
+          // Streamed with a running byte cap (#31) — a chunked or length-omitted
+          // response can't blow past the limit before it's checked — and compared
+          // in bytes, not JS string length (#32), so non-ASCII payloads can't slip
+          // past a Content-Length-sized cap after UTF-16 decoding.
+          const GBFS_MAX_BODY_BYTES = 5 * 1024 * 1024; // 5 MB
+          let body;
+          try {
+            body = await readResponseTextCapped(upstream, GBFS_MAX_BODY_BYTES);
+          } catch (error) {
+            if (error?.code === 'RESPONSE_TOO_LARGE') {
+              res.writeHead(502, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+              res.end(JSON.stringify({ error: 'GBFS upstream response too large' }));
+              return;
+            }
+            throw error;
           }
           const contentType = upstream.headers.get('content-type') || 'application/json';
           res.writeHead(upstream.status, {
@@ -3666,6 +3680,14 @@ const CCTV_SOURCE_FETCH_TIMEOUT_MS = 15 * 1000;
  * client refresh cadence. A bounded miss can fall through to Street View or
  * the synthetic frame instead of leaving the browser preview pending. */
 export const CCTV_FRAME_FETCH_TIMEOUT_MS = 8 * 1000;
+/** Hard ceiling on one buffered upstream CCTV snapshot image (#28). A real
+ * camera JPEG runs well under 1 MB; this only bounds a compromised or
+ * misbehaving upstream, not normal traffic. */
+const CCTV_IMAGE_MAX_BYTES = 16 * 1024 * 1024;
+/** Bound on establishing the /media upstream connection and headers (#25) —
+ * separate from proxyMediaResponse's own idle/duration caps, which bound the
+ * body once streaming has actually started. */
+const CCTV_MEDIA_CONNECT_TIMEOUT_MS = 10 * 1000;
 /** @type {Array<object>} Cached merged + normalized CCTV source list. */
 let _cctvSourceCache = [];
 /** @type {number} Epoch-ms when the source cache was last refreshed. */
@@ -4303,8 +4325,16 @@ function normalizeSourceItem(item) {
     mountHeightM: toFiniteNumber(item.mountHeightM),
     groundElevationM: toFiniteNumber(item.groundElevationM),
     feedType: normalizeFeedType(item.feedType || item.type || ''),
-    url: typeof item.url === 'string' ? item.url : '',
-    snapshotUrl: typeof item.snapshotUrl === 'string' ? item.snapshotUrl : '',
+    // Reject an implausible URL at load time too, not only at fetch time
+    // (#29) — an operator config error (a pasted internal/loopback address)
+    // is surfaced as "no upstream configured" immediately rather than
+    // silently degrading per-request later. isPlausiblePublicMediaUrl only
+    // catches syntactically-private targets; a hostname that resolves to one
+    // is still caught at fetch time by resolvePublicMediaAddresses.
+    url: typeof item.url === 'string' && isPlausiblePublicMediaUrl(item.url) ? item.url : '',
+    snapshotUrl: typeof item.snapshotUrl === 'string' && isPlausiblePublicMediaUrl(item.snapshotUrl)
+      ? item.snapshotUrl
+      : '',
     license: String(item.license || item.licenseNote || ''),
     sourceKind: String(item.sourceKind || item.kind || 'configured'),
     // Optional CAL badge input (cctv-v2 design §3b/§9.2, additive-only per the
@@ -4532,6 +4562,192 @@ async function readCappedResponseText(upstream, maxBytes) {
   return { tooLarge: false, text };
 }
 
+/**
+ * Binary counterpart of {@link readCappedResponseText}: buffer a fetch
+ * Response body only up to a hard byte cap, checking the running total as
+ * chunks arrive rather than buffering the whole thing via arrayBuffer()
+ * first (#28) — a compromised/oversized configured CCTV source could
+ * otherwise exhaust memory inside the fetch timeout window. Returns null
+ * (and cancels the stream) once the cap is crossed.
+ * @param {Response} upstream - fetch() response.
+ * @param {number} maxBytes - hard ceiling on buffered bytes.
+ * @returns {Promise<Buffer|null>}
+ */
+async function readCappedResponseBuffer(upstream, maxBytes) {
+  const declared = Number(upstream.headers.get('content-length'));
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    try { await upstream.body?.cancel(); } catch { /* no-op */ }
+    return null;
+  }
+  if (!upstream.body || typeof upstream.body[Symbol.asyncIterator] !== 'function') {
+    const buf = Buffer.from(await upstream.arrayBuffer());
+    return buf.length > maxBytes ? null : buf;
+  }
+  const chunks = [];
+  let total = 0;
+  for await (const chunk of upstream.body) {
+    total += chunk.length;
+    if (total > maxBytes) {
+      try { await upstream.body.cancel(); } catch { /* no-op */ }
+      return null;
+    }
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)));
+}
+
+// ---------------------------------------------------------------------------
+// CCTV upstream fetch hardening (#29): source URLs come from operator config
+// (CCTV_SOURCES_FILE / CCTV_SOURCES_JSON), not client input, but a bad config
+// entry — or a hostname that starts resolving to an internal address after
+// the fact — shouldn't be able to turn this proxy into an SSRF pivot. Same
+// two-layer defense as the radio proxy: reject an obviously-private URL at
+// parse time, then resolve DNS and PIN the connection to the checked address
+// so a rebinding DNS answer can't redirect the request between the check and
+// the actual connect.
+// ---------------------------------------------------------------------------
+
+/** True if `hostname` is literal IPv4/IPv6 syntax rather than a name needing DNS. */
+function isIpLiteralHostname(hostname) {
+  return /^\d{1,3}(\.\d{1,3}){3}$/.test(hostname) || hostname.includes(':');
+}
+
+/**
+ * Cheap syntactic reject for an operator-registered CCTV media URL: http(s)
+ * only, no embedded credentials, not localhost/.local, and not a literal
+ * private/loopback/link-local/multicast IPv4 or IPv6 address. A plain
+ * hostname still needs the post-DNS-resolution check below — this alone
+ * can't catch a name that resolves to a private address.
+ * @param {string} value
+ * @returns {boolean}
+ */
+export function isPlausiblePublicMediaUrl(value) {
+  let url;
+  try { url = new URL(String(value ?? '')); } catch { return false; }
+  if (!/^https?:$/.test(url.protocol) || url.username || url.password) return false;
+  const hostname = url.hostname.toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '');
+  if (!hostname || hostname === 'localhost' || hostname.endsWith('.localhost') || hostname.endsWith('.local')) {
+    return false;
+  }
+  // isPublicRadioAddress isn't actually radio-specific: it's a general
+  // IPv4/IPv6 non-public-range classifier for an already-numeric address —
+  // reused here for a hostname that's itself a literal IP.
+  if (isIpLiteralHostname(hostname) && !isPublicRadioAddress(hostname)) return false;
+  return true;
+}
+
+/**
+ * Resolve a CCTV media hostname and return its addresses only if EVERY one
+ * is public. Reuses the same classifier as the URL-syntax check above.
+ * @param {string} hostname
+ * @param {typeof lookupDns} [lookupImpl]
+ * @returns {Promise<Array<{address:string,family?:number}>|null>}
+ */
+async function resolvePublicMediaAddresses(hostname, lookupImpl = lookupDns) {
+  try {
+    const resolved = await lookupImpl(hostname, { all: true, verbatim: true });
+    const rows = Array.isArray(resolved) ? resolved : [resolved];
+    const addresses = rows
+      .map((row) => ({ address: String(row?.address || ''), family: Number(row?.family) || undefined }))
+      .filter((row) => row.address);
+    if (!addresses.length || addresses.some((row) => !isPublicRadioAddress(row.address))) return null;
+    return addresses;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Issue a GET pinned to pre-resolved addresses — http or https, whichever
+ * the URL calls for (the radio proxy only ever needs https; CCTV sources can
+ * be either). A DNS answer that changes between the resolve check and this
+ * connect can't redirect the request, because the connection itself is
+ * forced to `addresses`, never a fresh lookup.
+ * @param {URL} url
+ * @param {{headers?: object, signal?: AbortSignal}} options
+ * @param {Array<{address:string,family?:number}>} addresses
+ * @returns {Promise<Response>}
+ */
+function fetchPinnedMediaGet(url, { headers, signal } = {}, addresses) {
+  return new Promise((resolve, reject) => {
+    const address = addresses[0];
+    const transport = url.protocol === 'http:' ? http : https;
+    const request = transport.request(url, {
+      method: 'GET',
+      headers,
+      signal,
+      lookup(_hostname, lookupOptions, callback) {
+        if (lookupOptions?.all) callback(null, addresses);
+        else callback(null, address.address, address.family);
+      },
+    }, (response) => {
+      const responseHeaders = new Headers();
+      for (const [name, value] of Object.entries(response.headers)) {
+        if (Array.isArray(value)) value.forEach((item) => responseHeaders.append(name, item));
+        else if (value !== undefined) responseHeaders.set(name, String(value));
+      }
+      resolve(new Response(Readable.toWeb(response), {
+        status: response.statusCode || 500,
+        statusText: response.statusMessage || '',
+        headers: responseHeaders,
+      }));
+    });
+    request.on('error', reject);
+    request.end();
+  });
+}
+
+/**
+ * DNS-pinned, SSRF-checked GET for an operator-registered CCTV media URL
+ * (#29). Returns null (never throws) for an implausible URL, a resolve
+ * failure/non-public result, or a connection error — every caller already
+ * has a fallback (Street View, the synthetic frame, or a clean 502) for a
+ * null/failed upstream, so there's nothing a thrown error would add here.
+ * @param {string} rawUrl
+ * @param {{headers?: object, signal?: AbortSignal}} [options]
+ * @returns {Promise<Response|null>}
+ */
+async function fetchCctvUpstream(rawUrl, options = {}) {
+  if (!isPlausiblePublicMediaUrl(rawUrl)) return null;
+  const url = new URL(rawUrl);
+  const addresses = await resolvePublicMediaAddresses(url.hostname);
+  if (!addresses) return null;
+  try {
+    return await fetchPinnedMediaGet(url, options, addresses);
+  } catch {
+    return null;
+  }
+}
+
+/** Bound how far into a media file a client's Range request may start/end —
+ * an upstream serving a large asset shouldn't have to seek/allocate for an
+ * absurd offset just because a client asked for one. */
+const MEDIA_RANGE_MAX_OFFSET = 10 * 1024 * 1024 * 1024; // 10 GB
+
+/**
+ * Validate a client-supplied Range header before forwarding it upstream
+ * (#27): a single satisfiable byte range only ("bytes=N-M", "bytes=N-", or
+ * "bytes=-N"), no multi-range list, no malformed or absurdly large offsets.
+ * @param {string|undefined} value
+ * @returns {string|null} The header value to forward, or null to drop it
+ *   (an invalid Range degrades to "send the whole response", matching HTTP's
+ *   own convention for an unsatisfiable/malformed Range rather than erroring).
+ */
+export function validatedRangeHeader(value) {
+  const raw = String(value ?? '').trim();
+  if (!raw) return null;
+  const match = /^bytes=(\d*)-(\d*)$/i.exec(raw);
+  if (!match) return null;
+  const [, startStr, endStr] = match;
+  if (!startStr && !endStr) return null;
+  const start = startStr ? Number(startStr) : null;
+  const end = endStr ? Number(endStr) : null;
+  if (start !== null && (!Number.isFinite(start) || start > MEDIA_RANGE_MAX_OFFSET)) return null;
+  if (end !== null && (!Number.isFinite(end) || end > MEDIA_RANGE_MAX_OFFSET)) return null;
+  if (start !== null && end !== null && start > end) return null;
+  return raw;
+}
+
 async function proxyMediaResponse(res, upstream, { sourceHeader = 'upstream' } = {}) {
   const contentType = upstream.headers.get('content-type') || 'application/octet-stream';
   const cacheControl = upstream.headers.get('cache-control') || 'no-store';
@@ -4560,14 +4776,54 @@ async function proxyMediaResponse(res, upstream, { sourceHeader = 'upstream' } =
 
   res.writeHead(upstream.status, headers);
 
+  // The declared-length check above only catches an upstream that's honest
+  // about an oversized fixed body; a chunked or length-omitted response —
+  // exactly what a live MJPEG/HLS feed sends — streamed straight through
+  // unbounded (#26). Three independent backstops, since a legitimate live
+  // feed is deliberately long-running and none alone is both safe and
+  // non-disruptive: a byte ceiling generous enough to never trip a normal
+  // viewing session, an idle timeout that only fires on a genuinely stalled
+  // upstream, and a hard per-connection duration cap so one connection can't
+  // hold the proxy open forever (the client's <video>/<img> element simply
+  // reconnects on its next request, same as any periodic camera refresh).
+  const MEDIA_STREAM_MAX_BYTES = 2 * 1024 * 1024 * 1024; // 2 GB
+  const MEDIA_STREAM_IDLE_TIMEOUT_MS = 30_000;
+  const MEDIA_STREAM_MAX_DURATION_MS = 2 * 60 * 60 * 1000; // 2 h
+
   const stream = toReadable(upstream.body);
   if (!stream) {
-    const buf = Buffer.from(await upstream.arrayBuffer());
-    res.end(buf);
+    // No streamable body (rare/synthetic Response) — still bound by bytes (#28).
+    const buf = await readCappedResponseBuffer(upstream, MEDIA_STREAM_MAX_BYTES);
+    res.end(buf ?? undefined);
     return;
   }
 
+  let streamedBytes = 0;
+  let idleTimer = null;
+  const durationTimer = setTimeout(() => {
+    stream.destroy(new Error('CCTV media stream exceeded its duration cap'));
+  }, MEDIA_STREAM_MAX_DURATION_MS);
+  const resetIdleTimer = () => {
+    if (idleTimer) clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => {
+      stream.destroy(new Error('CCTV media stream stalled (idle timeout)'));
+    }, MEDIA_STREAM_IDLE_TIMEOUT_MS);
+  };
+  const clearGuards = () => {
+    clearTimeout(durationTimer);
+    if (idleTimer) clearTimeout(idleTimer);
+  };
+  resetIdleTimer();
+  stream.on('data', (chunk) => {
+    streamedBytes += chunk.length;
+    resetIdleTimer();
+    if (streamedBytes > MEDIA_STREAM_MAX_BYTES) {
+      stream.destroy(new Error('CCTV media stream exceeded its size cap'));
+    }
+  });
+  stream.on('close', clearGuards);
   stream.on('error', () => {
+    clearGuards();
     if (!res.writableEnded) res.end();
   });
   stream.pipe(res);
@@ -4578,35 +4834,39 @@ async function proxyMediaResponse(res, upstream, { sourceHeader = 'upstream' } =
  *
  * A timeout is treated like every other upstream miss so the caller can
  * continue through the Street View and synthetic fallback chain. `fetchImpl`
- * and `timeoutMs` are injectable only to keep the timeout contract unit-testable.
+ * and `timeoutMs` are injectable only to keep the timeout contract unit-testable;
+ * leaving `fetchImpl` unset routes through the DNS-pinned, SSRF-checked fetch
+ * (#29) that production actually uses.
  *
  * @param {string} url - Server-registered upstream image URL.
  * @param {object} [options]
- * @param {typeof fetch} [options.fetchImpl=fetch] - Fetch implementation.
+ * @param {typeof fetch} [options.fetchImpl] - Fetch implementation (tests only).
  * @param {number} [options.timeoutMs=CCTV_FRAME_FETCH_TIMEOUT_MS] - Abort timeout.
  * @returns {Promise<{ok:true,body:Buffer,contentType:string}|null>}
  */
 export async function fetchCctvImageFromUpstream(url, {
-  fetchImpl = fetch,
+  fetchImpl = null,
   timeoutMs = CCTV_FRAME_FETCH_TIMEOUT_MS,
 } = {}) {
-  if (!url || !/^https?:\/\//i.test(url)) return null;
+  if (!url || !isPlausiblePublicMediaUrl(url)) return null;
   const controller = new AbortController();
   const timeoutId = setTimeout(() => {
     controller.abort(new DOMException('CCTV upstream frame fetch timed out', 'TimeoutError'));
   }, timeoutMs);
   try {
-    const upstream = await fetchImpl(url, {
-      headers: { 'User-Agent': 'gods-eye-view-cctv-proxy/1.0' },
-      signal: controller.signal,
-    });
+    const headers = { 'User-Agent': 'gods-eye-view-cctv-proxy/1.0' };
+    const upstream = fetchImpl
+      ? await fetchImpl(url, { headers, signal: controller.signal })
+      : await fetchCctvUpstream(url, { headers, signal: controller.signal });
+    if (!upstream) return null;
     const contentType = upstream.headers.get('content-type') || '';
     if (!upstream.ok || !contentType.startsWith('image/')) return null;
-    return {
-      ok: true,
-      body: Buffer.from(await upstream.arrayBuffer()),
-      contentType,
-    };
+    // A camera snapshot is a single JPEG frame — real ones run well under 1
+    // MB; 16 MB is generous headroom while still bounding a compromised or
+    // misbehaving upstream instead of buffering it unbounded (#28).
+    const body = await readCappedResponseBuffer(upstream, CCTV_IMAGE_MAX_BYTES);
+    if (!body) return null;
+    return { ok: true, body, contentType };
   } catch {
     return null;
   } finally {
@@ -4786,7 +5046,7 @@ function cctvProxy() {
             const mediaUrl = source?.url || '';
             const feedType = normalizeFeedType(source?.feedType || 'image');
 
-            if (!mediaUrl || !/^https?:\/\//i.test(mediaUrl)) {
+            if (!mediaUrl || !isPlausiblePublicMediaUrl(mediaUrl)) {
               setHealth(cameraId, {
                 status: 'degraded',
                 sourceKind: 'fallback',
@@ -4800,11 +5060,34 @@ function cctvProxy() {
 
             try {
               const upstreamHeaders = { 'User-Agent': 'gods-eye-view-cctv-proxy/1.0' };
-              const requestRange = req.headers?.range;
+              // Validated/stripped, never forwarded raw (#27); pinned against
+              // the resolved DNS address, http(s) and private-range checked (#29).
+              const requestRange = validatedRangeHeader(req.headers?.range);
               if (requestRange) upstreamHeaders.Range = requestRange;
-              const upstream = await fetch(mediaUrl, {
-                headers: upstreamHeaders,
-              });
+              const mediaController = new AbortController();
+              const mediaTimeoutId = setTimeout(() => {
+                mediaController.abort(new DOMException('CCTV media upstream connect timed out', 'TimeoutError'));
+              }, CCTV_MEDIA_CONNECT_TIMEOUT_MS);
+              let upstream;
+              try {
+                upstream = await fetchCctvUpstream(mediaUrl, {
+                  headers: upstreamHeaders,
+                  signal: mediaController.signal,
+                });
+              } finally {
+                clearTimeout(mediaTimeoutId);
+              }
+              if (!upstream) {
+                setHealth(cameraId, {
+                  status: 'degraded',
+                  sourceKind: 'upstream',
+                  label: source?.provider || 'Configured source',
+                  message: 'Upstream unreachable or refused (timeout, DNS, or non-public address)',
+                });
+                res.writeHead(502, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+                res.end(JSON.stringify({ error: 'Upstream media source unreachable' }));
+                return;
+              }
               const contentType = upstream.headers.get('content-type') || '';
               if (!upstream.ok) {
                 setHealth(cameraId, {
