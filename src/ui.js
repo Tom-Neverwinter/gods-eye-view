@@ -4195,16 +4195,34 @@ export class StyleManager {
     });
 
     const focusMapSource = () => {
-      if (panelId !== 'control-panel') return;
-      panelEl.querySelector('.map-stack-chip.active, .map-stack-chip')?.focus?.({ preventScroll: true });
+      if (panelId !== 'control-panel') return false;
+      const chip = panelEl.querySelector('.map-stack-chip.active, .map-stack-chip');
+      if (!chip?.focus) return false;
+      chip.focus({ preventScroll: true });
+      // .focus() on a still-hidden element is a SILENT no-op, so the caller
+      // has to check whether focus actually landed rather than assume it did.
+      return document.activeElement === chip;
     };
 
+    // The tray opens behind a 180ms `visibility` transition (.dock-popover-content
+    // in style.css), and a chip inside it cannot take focus until that lands.
+    // A single fixed delay therefore races the transition: when the machine is
+    // slow enough that the fade has not finished by the time the timer fires,
+    // focus() silently does nothing and the keyboard user is stranded on the
+    // disclosure with an open tray they cannot reach (#54). Retry on a short
+    // cadence until focus actually lands, bounded so a permanently hidden tray
+    // cannot spin.
     const scheduleMapSourceFocus = () => {
       clearTimeout(disclosureFocusTimer);
-      disclosureFocusTimer = window.setTimeout(() => {
+      let attempts = 0;
+      const attemptFocus = () => {
         disclosureFocusTimer = null;
-        if (!panelEl.classList.contains('collapsed')) focusMapSource();
-      }, 240);
+        if (panelEl.classList.contains('collapsed')) return;
+        if (focusMapSource()) return;
+        if (++attempts > 24) return; // ~720ms past the first try, then give up
+        disclosureFocusTimer = window.setTimeout(attemptFocus, 30);
+      };
+      disclosureFocusTimer = window.setTimeout(attemptFocus, 240);
     };
 
     const toggleDisclosure = ({ focusSource = false } = {}) => {

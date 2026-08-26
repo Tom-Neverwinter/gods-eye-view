@@ -190,9 +190,32 @@ try {
     JSON.stringify(esriTileFailureFallback),
   );
 
+  // The tray's state changes are timer-driven: opening schedules the focus
+  // hand-off to a Map Source tile 240ms later (scheduleMapSourceFocus in
+  // ui.js). A fixed sleep races that timer rather than observing it settle —
+  // 300ms left only 60ms of margin, which is what made these checks flake on
+  // a clean checkout (#54). Wait on controller truth instead, the way the
+  // Bing-switch check further down already does.
+  // The wait only settles state; the check() below it is still the assertion,
+  // so a swallowed timeout surfaces as that check failing with real values
+  // rather than as an opaque puppeteer error.
+  const waitTray = (wantExpanded, wantFocus) => page.waitForFunction(
+    (expanded, focus) => {
+      const toggle = document.getElementById('control-panel-toggle');
+      if (toggle?.getAttribute('aria-expanded') !== expanded) return false;
+      if (!focus) return true;
+      const active = document.activeElement;
+      return focus === 'toggle'
+        ? active?.id === 'control-panel-toggle'
+        : active?.dataset?.stackId === focus;
+    },
+    { timeout: 2000 },
+    wantExpanded, wantFocus,
+  ).catch(() => {});
+
   await page.focus('#control-panel-toggle');
   await page.keyboard.press('Enter');
-  await new Promise((resolve) => setTimeout(resolve, 300));
+  await waitTray('true', 'photoreal');
   const keyboardOpen = await page.evaluate(() => ({
     expanded: document.getElementById('control-panel-toggle').getAttribute('aria-expanded'),
     activeStack: document.activeElement?.dataset?.stackId || null,
@@ -204,7 +227,7 @@ try {
   );
 
   await page.keyboard.press('Escape');
-  await new Promise((resolve) => setTimeout(resolve, 40));
+  await waitTray('false', 'toggle');
   const keyboardClose = await page.evaluate(() => ({
     expanded: document.getElementById('control-panel-toggle').getAttribute('aria-expanded'),
     activeId: document.activeElement?.id || null,
@@ -216,7 +239,7 @@ try {
   );
 
   await page.keyboard.press('Space');
-  await new Promise((resolve) => setTimeout(resolve, 300));
+  await waitTray('true', 'photoreal');
   const spaceOpen = await page.evaluate(() => ({
     expanded: document.getElementById('control-panel-toggle').getAttribute('aria-expanded'),
     activeStack: document.activeElement?.dataset?.stackId || null,
@@ -231,9 +254,11 @@ try {
   await page.keyboard.down('Enter');
   await new Promise((resolve) => setTimeout(resolve, 320));
   await page.keyboard.up('Enter');
+  await waitTray('true', 'photoreal'); // let the hold's scheduled focus hand-off land
   await page.keyboard.press('Escape');
+  await waitTray('false', 'toggle');
   await page.keyboard.press('Enter');
-  await new Promise((resolve) => setTimeout(resolve, 300));
+  await waitTray('true', 'photoreal');
   const longHoldRecovery = await page.evaluate(() => ({
     expanded: document.getElementById('control-panel-toggle').getAttribute('aria-expanded'),
     activeStack: document.activeElement?.dataset?.stackId || null,
