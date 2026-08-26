@@ -439,39 +439,58 @@ function makeRateLimiter({ windowMs, max, globalMax }) {
 const _overpassRateLimiter = makeRateLimiter({ windowMs: 60_000, max: 90, globalMax: 300 });
 const _militaryInstallationsRateLimiter = makeRateLimiter({ windowMs: 60_000, max: 90, globalMax: 300 });
 const _routeRateLimiter = makeRateLimiter({ windowMs: 60_000, max: 60, globalMax: 200 });
+// Always-on (not opt-in): unlike the OpenAI/Google proxies this endpoint isn't
+// cost-bearing, it's disk-write-bearing, so it gets the same unconditional
+// backstop as overpass/route above rather than requiring env config (#23).
+// 240/min/IP comfortably covers one chatty voice session's event volume.
+const _realtimeDebugLogRateLimiter = makeRateLimiter({ windowMs: 60_000, max: 240, globalMax: 2000 });
 
 /**
- * Opt-in per-IP rate limiter for the cost-bearing API proxies (OpenAI / Google).
- * DEFAULT IS UNLIMITED: when the env var is unset, `0`, or non-numeric, this
- * returns `null` and the caller skips the check entirely — a runtime no-op that
- * preserves the original behavior. Only a positive integer N enables a fixed
- * 60s window of N requests/IP (built lazily once, then reused so its per-IP
- * window state persists across requests). The global backstop is set to a
- * generous multiple of the per-IP cap so a single host can't starve the rest.
+ * Per-IP rate limiter for the cost-bearing API proxies (OpenAI / Google).
+ * DEFAULT-ON (#16/#17/#18/#19): an unset env var uses `defaultMax`, not
+ * unlimited — this is a key-brokering process, and an exposed deployment
+ * that forgot to configure a limiter should still have a backstop. An
+ * explicit `0` (or any non-positive/non-numeric value) is the deliberate
+ * opt-OUT for a trusted local-only setup, returning `null` so the caller
+ * skips the check entirely. A positive integer N (env or default) enables a
+ * fixed 60s window of N requests/IP (built lazily once, then reused so its
+ * per-IP window state persists across requests). The global backstop is set
+ * to a generous multiple of the per-IP cap so a single host can't starve the
+ * rest.
  *
  * @param {string|undefined} envValue - Raw env value (requests/min/IP).
+ * @param {number} defaultMax - Cap used when envValue is unset/empty.
  * @returns {((key:string)=>boolean)|null} An `allow(key)` fn, or null when unlimited.
  */
-function makeOptInRateLimiter(envValue) {
-  const max = Number(envValue);
-  if (!Number.isFinite(max) || max <= 0) return null; // unset/0/garbage -> unlimited
+export function makeCostRateLimiter(envValue, defaultMax) {
+  const max = envValue === undefined || envValue === '' ? defaultMax : Number(envValue);
+  if (!Number.isFinite(max) || max <= 0) return null; // explicit 0/garbage -> opt out (unlimited)
   return makeRateLimiter({ windowMs: 60_000, max: Math.floor(max), globalMax: Math.floor(max) * 20 });
 }
+/** Default per-IP cap (requests/min) when GEV_RATELIMIT_OPENAI_PER_MIN is unset. */
+const OPENAI_RATELIMIT_DEFAULT_PER_MIN = 30;
+/** Default per-IP cap (requests/min) when GEV_RATELIMIT_GOOGLE_PER_MIN is unset. */
+const GOOGLE_RATELIMIT_DEFAULT_PER_MIN = 60;
 // Built LAZILY on first request, NOT at module load: `.env` values are applied to process.env later
 // (the plugin config hook calls loadEnv → process.env, AFTER this module is imported), so reading
-// process.env here at import time would always see them unset and silently stay unlimited even when
-// configured via .env. Building on first request (like the OPENAI_API_KEY reads) sees the loaded env;
-// the result is cached so the limiter's per-IP window state persists. `null` = unlimited (default).
+// process.env here at import time would always see them unset and silently apply the wrong default
+// (or miss an explicit opt-out) even when configured via .env. Building on first request (like the
+// OPENAI_API_KEY reads) sees the loaded env; the result is cached so the limiter's per-IP window
+// state persists. `null` = unlimited (explicit opt-out only).
 let _openAiRateLimiter; // undefined = not built yet; null = unlimited; fn = active limiter
 let _googleRateLimiter;
-/** OpenAI cost endpoints (realtime/token + hud-summary). Null = unlimited (default). */
+/** OpenAI cost endpoints (realtime/token + hud-summary). Default-on (30/min/IP). */
 function openAiRateLimiter() {
-  if (_openAiRateLimiter === undefined) _openAiRateLimiter = makeOptInRateLimiter(process.env.GEV_RATELIMIT_OPENAI_PER_MIN);
+  if (_openAiRateLimiter === undefined) {
+    _openAiRateLimiter = makeCostRateLimiter(process.env.GEV_RATELIMIT_OPENAI_PER_MIN, OPENAI_RATELIMIT_DEFAULT_PER_MIN);
+  }
   return _openAiRateLimiter;
 }
-/** Google cost endpoint (nearby-places). Null = unlimited (default). */
+/** Google cost endpoints (nearby-places, text-search, CCTV Street View fallback). Default-on (60/min/IP). */
 function googleRateLimiter() {
-  if (_googleRateLimiter === undefined) _googleRateLimiter = makeOptInRateLimiter(process.env.GEV_RATELIMIT_GOOGLE_PER_MIN);
+  if (_googleRateLimiter === undefined) {
+    _googleRateLimiter = makeCostRateLimiter(process.env.GEV_RATELIMIT_GOOGLE_PER_MIN, GOOGLE_RATELIMIT_DEFAULT_PER_MIN);
+  }
   return _googleRateLimiter;
 }
 
@@ -493,6 +512,22 @@ function enforceOptInRateLimit(limiter, req, res) {
   res.setHeader('Retry-After', '5');
   res.end(JSON.stringify({ error: 'Rate limit exceeded' }));
   return false;
+}
+
+/**
+ * `vite preview` serves the production BUILD and is easy to mistake for a
+ * harmless static preview — but every proxy plugin below also wires itself
+ * into `configurePreviewServer`, so by default it brokers the exact same
+ * server-side secrets (OpenAI, Google, AISStream, WiGLE, OpenSky, TAK mTLS
+ * certs) as `vite dev`. Fail closed: preview does NOT get these routes
+ * unless explicitly opted into (#22). Dev is unaffected — this only gates
+ * the `configurePreviewServer` hook.
+ * @param {import('vite').PreviewServer} server
+ * @param {(middlewares: import('connect').Server) => void} install
+ */
+export function installOnPreviewIfEnabled(server, install) {
+  if (process.env.GEV_PREVIEW_API_PROXIES !== '1') return;
+  install(server.middlewares);
 }
 
 /**
@@ -1343,6 +1378,75 @@ const OPENAI_HUD_SUMMARY_MODEL_DEFAULT = 'gpt-5-nano';
 const REALTIME_DEBUG_LOG_DIR = path.join(__dirname, '.gev-logs');
 const REALTIME_DEBUG_LOG_FILE = path.join(REALTIME_DEBUG_LOG_DIR, 'realtime-conversations.jsonl');
 const REALTIME_DEBUG_LOG_MAX_BYTES = 8 * 1024 * 1024;
+// Total on-disk size the log file may reach before it's rotated (one level:
+// current -> .1, dropping whatever was in .1). A local debug aid, not an
+// audit trail, so bounded churn beats unbounded growth (#23).
+const REALTIME_DEBUG_LOG_MAX_FILE_BYTES = 20 * 1024 * 1024;
+// Client-supplied event names are dotted/underscored identifiers
+// ('session.starting', 'tool.call.skipped_superseded', ...) — never free text.
+export const REALTIME_DEBUG_LOG_EVENT_RE = /^[A-Za-z0-9_.-]{1,80}$/;
+
+/**
+ * Server-side mirror of gevRealtime.js's client-side redaction
+ * (sanitizeDebugValue/sanitizeDebugString/isSecretLikeKey). A direct POST to
+ * /api/realtime/debug-log bypasses the browser entirely, so the client's
+ * redaction is a convenience only — this is the one that's actually
+ * enforced before anything reaches disk (#24). Keep both in sync if either
+ * changes.
+ * @param {*} value
+ * @param {number} [depth]
+ * @returns {*}
+ */
+export function redactRealtimeDebugValue(value, depth = 0) {
+  if (depth > 10) return '[MaxDepth]';
+  if (value == null || typeof value === 'number' || typeof value === 'boolean') return value;
+  if (typeof value === 'string') return redactRealtimeDebugString(value);
+  if (Array.isArray(value)) {
+    // Same 500-item cap the payload as a whole is implicitly bounded to by
+    // REALTIME_DEBUG_LOG_MAX_BYTES — an explicit floor here keeps one huge
+    // array from dominating the redaction pass's own work.
+    return value.slice(0, 500).map((item) => redactRealtimeDebugValue(item, depth + 1));
+  }
+  if (typeof value !== 'object') return String(value);
+  const output = {};
+  for (const [key, item] of Object.entries(value)) {
+    output[key] = /(?:api[_-]?key|authorization|bearer|client[_-]?secret|token|secret|password)/i.test(key)
+      ? '[Redacted]'
+      : redactRealtimeDebugValue(item, depth + 1);
+  }
+  return output;
+}
+
+function redactRealtimeDebugString(value) {
+  if (value.startsWith('data:image/')) return `[Redacted image data URL, ${value.length} chars]`;
+  const redacted = value
+    .replace(/sk-(?:proj-)?[A-Za-z0-9_-]{20,}/g, '[Redacted OpenAI API key]')
+    .replace(/Bearer\s+[A-Za-z0-9._~+/-]+=*/gi, 'Bearer [Redacted]')
+    .replace(/"client_secret"\s*:\s*"[^"]+"/gi, '"client_secret":"[Redacted]"')
+    .replace(/"value"\s*:\s*"ek_[^"]+"/gi, '"value":"[Redacted ephemeral key]"');
+  const maxLength = 50000;
+  return redacted.length > maxLength
+    ? `${redacted.slice(0, maxLength)}...[Truncated ${redacted.length - maxLength} chars]`
+    : redacted;
+}
+
+/**
+ * Append one line to the Realtime debug log, rotating first if the write
+ * would push the file past REALTIME_DEBUG_LOG_MAX_FILE_BYTES. Async
+ * throughout (mkdir/stat/rename/appendFile) so a burst of debug events never
+ * blocks the event loop on synchronous disk I/O (#23).
+ * @param {string} line - Already newline-terminated.
+ */
+async function appendRealtimeDebugLogBounded(line) {
+  await fsp.mkdir(REALTIME_DEBUG_LOG_DIR, { recursive: true });
+  try {
+    const stat = await fsp.stat(REALTIME_DEBUG_LOG_FILE);
+    if (stat.size + Buffer.byteLength(line) > REALTIME_DEBUG_LOG_MAX_FILE_BYTES) {
+      await fsp.rename(REALTIME_DEBUG_LOG_FILE, `${REALTIME_DEBUG_LOG_FILE}.1`);
+    }
+  } catch { /* no existing file yet — nothing to rotate */ }
+  await fsp.appendFile(REALTIME_DEBUG_LOG_FILE, line);
+}
 
 /**
  * @type {ReturnType<typeof createAisStreamAdapter>|null}
@@ -1731,7 +1835,7 @@ function rocketLaunchesProxy() {
       install(server.middlewares);
     },
     configurePreviewServer(server) {
-      install(server.middlewares);
+      installOnPreviewIfEnabled(server, install);
     },
   };
 }
@@ -4511,6 +4615,31 @@ export async function fetchCctvImageFromUpstream(url, {
 }
 
 /**
+ * The Street View fallback's request params, sourced ONLY from a
+ * server-registered camera — never from client query params (#20). Returns
+ * null for an unrecognized camera id (no `source`), which is also the signal
+ * the caller uses to skip the Street View call entirely: an id nobody
+ * registered has no coordinates to fall back to, and a client that supplied
+ * its own lat/lon there would otherwise be able to spend the operator's
+ * Google quota fetching Street View imagery for any location it likes. The
+ * legitimate client already sends these same values (they came FROM the
+ * source list in the first place — see frameUrlFor in cctv.js), so this
+ * changes nothing for real traffic.
+ * @param {{lat?: number, lon?: number, headingDeg?: number, fovDeg?: number, pitchDeg?: number}|undefined} source
+ * @returns {{lat: number, lon: number, heading: number, fov: number, pitch: number}|null}
+ */
+export function streetViewFallbackParams(source) {
+  if (!source) return null;
+  return {
+    lat: Number(source.lat),
+    lon: Number(source.lon),
+    heading: Number(source.headingDeg),
+    fov: Number(source.fovDeg),
+    pitch: Number(source.pitchDeg),
+  };
+}
+
+/**
  * Vite plugin: CCTV camera proxy with source registry, frame/media serving,
  * fallback chain (upstream -> Street View -> synthetic SVG), and health tracking.
  *
@@ -4732,11 +4861,7 @@ function cctvProxy() {
           const source = sourceById.get(cameraId);
           const label = url.searchParams.get('label') || source?.name || cameraId;
           const city = url.searchParams.get('city') || source?.city || '';
-          const lat = Number(url.searchParams.get('lat') || source?.lat);
-          const lon = Number(url.searchParams.get('lon') || source?.lon);
-          const heading = Number(url.searchParams.get('heading') || source?.headingDeg);
-          const fov = Number(url.searchParams.get('fov') || source?.fovDeg);
-          const pitch = Number(url.searchParams.get('pitch') || source?.pitchDeg);
+          const svParams = streetViewFallbackParams(source);
 
           // Only use server-registered upstream URLs — never accept client-supplied URLs
           // (prevents SSRF via ?upstream= query parameter)
@@ -4761,7 +4886,14 @@ function cctvProxy() {
             return;
           }
 
-          const sv = await streetViewFallback({ lat, lon, heading, fov, pitch });
+          // Only a known registered camera can reach Street View, using ONLY its
+          // own server-registered coordinates (#20) — see streetViewFallbackParams.
+          // Also route-limited like the other Google proxies, since a fallback
+          // image still costs the operator a request.
+          const svGrl = svParams ? googleRateLimiter() : null;
+          const sv = svParams && (!svGrl || svGrl(clientKey(req)))
+            ? await streetViewFallback(svParams)
+            : null;
           if (sv?.ok) {
             setHealth(cameraId, {
               status: 'degraded',
@@ -4938,6 +5070,7 @@ function aisLiveProxy() {
       server.httpServer?.on('close', disposeAisStream);
     },
     configurePreviewServer(server) {
+      if (process.env.GEV_PREVIEW_API_PROXIES !== '1') return;
       install(server.middlewares);
       startAisStreamWatchdogTick();
       server.httpServer?.on('close', disposeAisStream);
@@ -5077,6 +5210,7 @@ function meshtasticProxy() {
       server.httpServer?.on('close', disposeMeshtasticConnection);
     },
     configurePreviewServer(server) {
+      if (process.env.GEV_PREVIEW_API_PROXIES !== '1') return;
       install(server.middlewares);
       ensureMeshtasticConnection();
       server.httpServer?.on('close', disposeMeshtasticConnection);
@@ -5250,7 +5384,7 @@ function wigleProxy() {
   return {
     name: 'wigle-proxy',
     configureServer(server) { install(server.middlewares); },
-    configurePreviewServer(server) { install(server.middlewares); },
+    configurePreviewServer(server) { installOnPreviewIfEnabled(server, install); },
   };
 }
 
@@ -5499,6 +5633,7 @@ function takProxy() {
       server.httpServer?.on('close', disposeTakConnection);
     },
     configurePreviewServer(server) {
+      if (process.env.GEV_PREVIEW_API_PROXIES !== '1') return;
       install(server.middlewares);
       ensureTakConnection();
       server.httpServer?.on('close', disposeTakConnection);
@@ -5617,7 +5752,7 @@ function trackBackfillProxies() {
       install(server.middlewares);
     },
     configurePreviewServer(server) {
-      install(server.middlewares);
+      installOnPreviewIfEnabled(server, install);
     },
   };
 }
@@ -5638,7 +5773,7 @@ function openAiRealtimeProxy() {
         return;
       }
 
-      // Opt-in per-IP throttle (GEV_RATELIMIT_OPENAI_PER_MIN). No-op when unset.
+      // Default-on per-IP throttle (GEV_RATELIMIT_OPENAI_PER_MIN, 30/min unless configured).
       if (!enforceOptInRateLimit(openAiRateLimiter(), req, res)) return;
 
       const apiKey = process.env.OPENAI_API_KEY;
@@ -5695,14 +5830,36 @@ function openAiRealtimeProxy() {
         res.end(JSON.stringify({ error: 'Method not allowed' }));
         return;
       }
+      if (!_realtimeDebugLogRateLimiter(clientKey(req))) {
+        res.statusCode = 429;
+        res.setHeader('Content-Type', 'application/json');
+        res.setHeader('Retry-After', '5');
+        res.end(JSON.stringify({ error: 'Rate limit exceeded' }));
+        return;
+      }
 
       try {
         const body = await readRequestBody(req, REALTIME_DEBUG_LOG_MAX_BYTES);
         const record = JSON.parse(body || '{}');
-        fs.mkdirSync(REALTIME_DEBUG_LOG_DIR, { recursive: true });
-        fs.appendFileSync(REALTIME_DEBUG_LOG_FILE, `${JSON.stringify({
+        // Reject unknown shapes instead of storing arbitrary JSON (#24) — a
+        // direct POST here (skipping gevRealtime.js entirely) must not be
+        // able to write whatever it likes to disk.
+        if (!record || typeof record !== 'object' || Array.isArray(record)
+          || typeof record.event !== 'string' || !REALTIME_DEBUG_LOG_EVENT_RE.test(record.event)) {
+          res.statusCode = 400;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ error: 'Invalid debug-log event' }));
+          return;
+        }
+        const safeRecord = redactRealtimeDebugValue({
+          sessionId: typeof record.sessionId === 'string' ? record.sessionId.slice(0, 200) : null,
+          event: record.event,
+          status: typeof record.status === 'string' ? record.status.slice(0, 200) : null,
+          payload: record.payload ?? null,
+        });
+        await appendRealtimeDebugLogBounded(`${JSON.stringify({
           loggedAt: new Date().toISOString(),
-          ...record,
+          ...safeRecord,
         })}\n`);
         res.statusCode = 204;
         res.end();
@@ -5721,7 +5878,7 @@ function openAiRealtimeProxy() {
         return;
       }
 
-      // Opt-in per-IP throttle (GEV_RATELIMIT_OPENAI_PER_MIN). No-op when unset.
+      // Default-on per-IP throttle (GEV_RATELIMIT_OPENAI_PER_MIN, 30/min unless configured).
       if (!enforceOptInRateLimit(openAiRateLimiter(), req, res)) return;
 
       const apiKey = process.env.OPENAI_API_KEY;
@@ -5890,7 +6047,7 @@ function openAiRealtimeProxy() {
       install(server.middlewares);
     },
     configurePreviewServer(server) {
-      install(server.middlewares);
+      installOnPreviewIfEnabled(server, install);
     },
   };
 }
@@ -5952,7 +6109,7 @@ function googlePlacesContextProxy() {
         return;
       }
 
-      // Opt-in per-IP throttle (GEV_RATELIMIT_GOOGLE_PER_MIN). No-op when unset.
+      // Default-on per-IP throttle (GEV_RATELIMIT_GOOGLE_PER_MIN, 60/min unless configured).
       // Inlined (not the shared helper) so the 429 body keeps this endpoint's
       // `places: []` contract that the client expects on every error response.
       const _grl = googleRateLimiter();
@@ -5976,7 +6133,7 @@ function googlePlacesContextProxy() {
       const latitude = Number(requestUrl.searchParams.get('lat'));
       const longitude = Number(requestUrl.searchParams.get('lon'));
       const radiusM = Math.max(25, Math.min(5000, Number(requestUrl.searchParams.get('radiusM')) || 250));
-      if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+      if (!isValidLatLon(latitude, longitude)) {
         res.statusCode = 400;
         res.setHeader('Content-Type', 'application/json');
         res.end(JSON.stringify({ error: 'Valid lat and lon are required', places: [] }));
@@ -6066,7 +6223,7 @@ function googlePlacesContextProxy() {
         return;
       }
 
-      // Opt-in per-IP throttle (GEV_RATELIMIT_GOOGLE_PER_MIN). No-op when unset.
+      // Default-on per-IP throttle (GEV_RATELIMIT_GOOGLE_PER_MIN, 60/min unless configured).
       // Inlined (like nearby-places) so the 429 body keeps the `places: []`
       // contract the client expects on every error response.
       const _grl = googleRateLimiter();
@@ -6091,7 +6248,7 @@ function googlePlacesContextProxy() {
       const latitude = Number(requestUrl.searchParams.get('lat'));
       const longitude = Number(requestUrl.searchParams.get('lon'));
       const radiusM = Math.max(50, Math.min(50000, Number(requestUrl.searchParams.get('radiusM')) || 4000));
-      if (!textQuery || !Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+      if (!textQuery || !isValidLatLon(latitude, longitude)) {
         res.statusCode = 400;
         res.setHeader('Content-Type', 'application/json');
         res.end(JSON.stringify({ error: 'q, lat and lon are required', places: [] }));
@@ -6177,7 +6334,7 @@ function googlePlacesContextProxy() {
       install(server.middlewares);
     },
     configurePreviewServer(server) {
-      install(server.middlewares);
+      installOnPreviewIfEnabled(server, install);
     },
   };
 }
@@ -7560,7 +7717,7 @@ function militaryInstallationsProxy() {
       install(server.middlewares);
     },
     configurePreviewServer(server) {
-      install(server.middlewares);
+      installOnPreviewIfEnabled(server, install);
     },
   };
 }
@@ -7592,12 +7749,19 @@ export function requiredFiniteQueryNumber(params, key) {
   return Number.isFinite(number) ? number : null;
 }
 
+/** True for a finite latitude in [-90, 90] and longitude in [-180, 180]. Every
+ *  server-side proxy that forwards client coordinates upstream should gate on
+ *  this before spending a request — "finite" alone lets e.g. lat=999 through
+ *  (#19). */
+export function isValidLatLon(latitude, longitude) {
+  return Number.isFinite(latitude) && Number.isFinite(longitude)
+    && latitude >= -90 && latitude <= 90 && longitude >= -180 && longitude <= 180;
+}
+
 export function validRegionalPoint(params) {
   const latitude = requiredFiniteQueryNumber(params, 'latitude');
   const longitude = requiredFiniteQueryNumber(params, 'longitude');
-  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
-  if (latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180) return null;
-  return { latitude, longitude };
+  return isValidLatLon(latitude, longitude) ? { latitude, longitude } : null;
 }
 
 function trimRegionalBriefCache() {
@@ -7855,7 +8019,7 @@ function regionalBriefProxy() {
       install(server.middlewares);
     },
     configurePreviewServer(server) {
-      install(server.middlewares);
+      installOnPreviewIfEnabled(server, install);
     },
   };
 }
@@ -7937,7 +8101,7 @@ function weatherEffectsProxy() {
       install(server.middlewares);
     },
     configurePreviewServer(server) {
-      install(server.middlewares);
+      installOnPreviewIfEnabled(server, install);
     },
   };
 }
@@ -7953,7 +8117,7 @@ function parseJsonEnv(key, fallback) {
   }
 }
 
-function parseCsvOrJsonEnv(key, fallback) {
+export function parseCsvOrJsonEnv(key, fallback) {
   const value = process.env[key];
   if (!value) return fallback;
   try {
@@ -8039,10 +8203,13 @@ export default defineConfig(({ mode }) => {
     server: {
       host: env.HOST || 'localhost',
       port: parseInt(env.PORT, 10) || 5173,
-      // When binding to all interfaces, allow any host; otherwise restrict to local names
-      allowedHosts: (env.HOST === '0.0.0.0' || env.HOST === '::')
-        ? true
-        : ['localhost', '127.0.0.1', '.local'],
+      // Host-header allowlist stays enforced even on a LAN bind (HOST=0.0.0.0
+      // or ::) — this process brokers API keys, so accepting any Host header
+      // there (Vite's `allowedHosts: true`) would open it to DNS-rebinding
+      // attacks from the network it was just exposed to. LAN hostnames must be
+      // opted into explicitly via ALLOWED_HOSTS (see .env.example), not
+      // granted for free by the bind address (issue #21).
+      allowedHosts: parseCsvOrJsonEnv('ALLOWED_HOSTS', ['localhost', '127.0.0.1', '.local']),
     },
     // Expose selected API keys to the browser via import.meta.env.*
     define: {
