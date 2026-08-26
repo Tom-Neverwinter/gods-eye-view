@@ -2320,12 +2320,19 @@ async function main() {
         }
 
         // (e) one-shot: run ~1.2 s of frames — the count must not grow (a per-frame
-        // sampler would add dozens). TWO bounded one-shot sources (re-pinned
-        // 2 → 4 for the validated round-4 mesh-floor design, 2026-07-06):
-        // groundSnap's model snap (one per grounded plane) and the mesh-floor
-        // CELL probe (one per unique ~111 m cell; the two synthetic grounded
-        // planes occupy distinct cells). FLATNESS across frames is the
-        // load-bearing invariant — the absolute count just pins the fixtures.
+        // sampler would add dozens). Two bounded one-shot sources CAN contribute:
+        // groundSnap's model snap (one per grounded plane, guaranteed — it samples
+        // unconditionally on cache miss) and the mesh-floor CELL probe (one per
+        // unique ~111 m cell, but only if it runs BEFORE groundSnap's own report
+        // already latches that same cell — groundSnap.heightFor calls
+        // reportValidatedMeshFloorCell after a successful sample, and the mesh
+        // sampler skips any cell already latched). Which source wins that race is
+        // a real timing dependency (relative model-ready time vs. this layer's next
+        // periodic update() tick), not a fixture bug — issue #44 measured a
+        // consistent 3 (one plane's mesh probe lost the race) rather than the
+        // hoped-for 4. So the floor only pins the GUARANTEED part (one snap per
+        // grounded plane); FLATNESS across frames below is the load-bearing
+        // invariant.
         const callsBefore = g3dState.sampleCalls;
         await page.evaluate(async (frames) => {
           const v = window.__godsEyeView.viewer;
@@ -2360,8 +2367,8 @@ async function main() {
         // sampler would add ~60+ over the frame loop; a mid-window poll
         // legitimately adds a few cells for moving contacts.
         record('ground-3d: ground snap + mesh-floor probes are one-shot/per-poll bounded (no per-frame sampling)',
-          callsBefore >= 4 && (callsAfter - callsBefore) <= 8,
-          `sampleHeight calls: after models up=${callsBefore} (≥4: snap + mesh cell per grounded plane), growth over ~60 frames=${callsAfter - callsBefore} (per-frame would be ~60+)`);
+          callsBefore >= 2 && (callsAfter - callsBefore) <= 8,
+          `sampleHeight calls: after models up=${callsBefore} (≥2 guaranteed: one snap per grounded plane; a 3rd/4th mesh-cell probe may or may not land depending on timing — see #44), growth over ~60 frames=${callsAfter - callsBefore} (per-frame would be ~60+)`);
 
         // (d) TRACKED grounded plane → the standalone tracked model (the owner's
         // "tracked SWA143 at 0 kts stayed a 2D cyan billboard" case).

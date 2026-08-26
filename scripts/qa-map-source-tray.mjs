@@ -161,13 +161,32 @@ try {
     JSON.stringify(spaceOpen),
   );
 
+  // The disclosure's own state changes (aria-expanded, the scheduled hand-off
+  // of focus to a Map Source tile) are debounced/timer-driven — see
+  // scheduleMapSourceFocus in ui.js (fires 240ms after open). A fixed sleep
+  // here races those timers instead of observing them settle (issue #54), so
+  // every step below waits on controller truth (aria-expanded / activeElement)
+  // the same way the Bing-switch check further down already does.
+  const waitSettled = (wantExpanded, wantStack) => page.waitForFunction(
+    (expanded, stack) => {
+      const toggle = document.getElementById('control-panel-toggle');
+      const activeStack = document.activeElement?.dataset?.stackId || null;
+      return toggle?.getAttribute('aria-expanded') === expanded
+        && (stack === null || activeStack === stack);
+    },
+    { timeout: 2000 },
+    wantExpanded, wantStack,
+  ).catch(() => {});
+
   await page.keyboard.press('Escape');
   await page.keyboard.down('Enter');
   await new Promise((resolve) => setTimeout(resolve, 320));
   await page.keyboard.up('Enter');
+  await waitSettled('true', 'photoreal'); // let the hold's scheduled focus hand-off land
   await page.keyboard.press('Escape');
+  await waitSettled('false', null);
   await page.keyboard.press('Enter');
-  await new Promise((resolve) => setTimeout(resolve, 300));
+  await waitSettled('true', 'photoreal');
   const longHoldRecovery = await page.evaluate(() => ({
     expanded: document.getElementById('control-panel-toggle').getAttribute('aria-expanded'),
     activeStack: document.activeElement?.dataset?.stackId || null,
