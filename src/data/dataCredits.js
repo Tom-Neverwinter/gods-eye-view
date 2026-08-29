@@ -86,6 +86,12 @@ export const DATA_CREDITS = [
       '<a href="https://www.opensnowmap.org" target="_blank" rel="noopener">OpenSnowMap.org</a> (CC BY-SA)',
   },
   {
+    key: 'rainviewer',
+    html:
+      'Weather radar / satellite overlay: ' +
+      '<a href="https://www.rainviewer.com/api.html" target="_blank" rel="noopener">© RainViewer</a>',
+  },
+  {
     key: 'overpass',
     html:
       'Road geometry (traffic): ' +

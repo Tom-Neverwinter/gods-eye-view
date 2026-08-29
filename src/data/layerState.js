@@ -231,6 +231,14 @@ const OPTION_GROUPS = Object.freeze({
     booleanOption('seamap', 's', true),
     booleanOption('snowmap', 'n', true),
   ]),
+  // Two independently toggleable RainViewer overlays (#85), same
+  // "one master row, several booleans" shape as `osmOverlays` above.
+  // Satellite defaults off — RainViewer's free satellite feed is
+  // intermittently empty, unlike radar (see weatherOverlay.js).
+  weatherOverlay: Object.freeze([
+    booleanOption('radar', 'r', true),
+    booleanOption('satellite', 's', false),
+  ]),
   // The user's own Rayhunter device address (#56) — a personal setting, not a
   // public data-source choice, but it's still durable per-user state, so it
   // rides the same options-group mechanism rather than a second persistence
@@ -312,6 +320,7 @@ export const LAYER_STATE_REGISTRY = Object.freeze([
   Object.freeze({ id: 'tak-events', token: 'h', disposition: 'enabled-only' }),
   Object.freeze({ id: 'telegeography-submarine-cables', token: 'u', disposition: 'enabled-only' }),
   Object.freeze({ id: 'traffic', token: 't', disposition: 'enabled-only' }),
+  Object.freeze({ id: 'weather-overlay', token: 'o', disposition: 'enabled+options', optionOwner: 'weatherOverlay' }),
   Object.freeze({ id: 'wigle-networks', token: 'k', disposition: 'enabled-only' }),
 ]);
 

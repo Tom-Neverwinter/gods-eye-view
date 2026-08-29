@@ -19,6 +19,7 @@ import wigleNetworksLayer from './data/wigleNetworks.js';
 import takEventsLayer from './data/takEvents.js';
 import nifcWildfiresLayer from './data/nifcWildfires.js';
 import osmOverlaysLayer from './data/osmOverlays.js';
+import weatherOverlayLayer from './data/weatherOverlay.js';
 import rayhunterTapLayer from './data/rayhunterTap.js';
 import militaryAwarenessLayer from './data/militaryAwareness.js';
 import localDataLayers from './data/localLayers.js';
@@ -258,6 +259,7 @@ async function init() {
     dataManager.register(takEventsLayer);
     dataManager.register(nifcWildfiresLayer);
     dataManager.register(osmOverlaysLayer);
+    dataManager.register(weatherOverlayLayer);
     dataManager.register(rayhunterTapLayer);
     dataManager.register(militaryAwarenessLayer);
     militaryAwarenessLayer.attachDataManager(dataManager);
