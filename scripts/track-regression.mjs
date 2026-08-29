@@ -94,6 +94,7 @@ import fs from 'node:fs';
 import puppeteer from 'puppeteer';
 import { classifyAircraft, CLASS_SCALE_3D, CLASS_MODEL_REAL } from '../src/data/aircraftClass.js';
 import { ensureGeoidReady, geoidHeight } from '../src/data/geoid.js';
+import { haversineMeters } from '../src/geoMath.js';
 
 // ---------------------------------------------------------------------------
 // Args
@@ -3841,16 +3842,6 @@ async function sampleFrames(page, count, sampleFn, ...args) {
 
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
-/** Great-circle surface distance (m) between two lat/lon points (small-angle safe). */
-function haversineMeters(lat1, lon1, lat2, lon2) {
-  const R = 6371000;
-  const toRad = (d) => (d * Math.PI) / 180;
-  const dLat = toRad(lat2 - lat1);
-  const dLon = toRad(lon2 - lon1);
-  const a = Math.sin(dLat / 2) ** 2
-    + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
-  return 2 * R * Math.asin(Math.sqrt(a));
-}
 
 // Poll a node-side predicate.
 function waitFor(pred, timeoutMs) {

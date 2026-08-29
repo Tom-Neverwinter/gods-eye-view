@@ -17,6 +17,7 @@
  */
 
 import { createRetryableLoader } from './retryableLoad.js';
+import { haversineKm as haversineKmLatLon } from '../geoMath.js';
 
 const EARTH_RADIUS_KM = 6371;
 const toRad = (d) => (d * Math.PI) / 180;
@@ -34,12 +35,11 @@ function ringAreaKm2(ring) {
   return Math.abs((sum * EARTH_RADIUS_KM * EARTH_RADIUS_KM) / 2);
 }
 
+// This module's local convention is (lon, lat) argument order (matching the
+// [lon, lat] ring-coordinate pairs above) — geoMath's is (lat, lon), so this
+// stays a thin order-swapping wrapper rather than touching every call site.
 function haversineKm(lon1, lat1, lon2, lat2) {
-  const dLat = toRad(lat2 - lat1);
-  const dLon = toRad(lon2 - lon1);
-  const h = Math.sin(dLat / 2) ** 2
-    + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
-  return 2 * EARTH_RADIUS_KM * Math.asin(Math.min(1, Math.sqrt(h)));
+  return haversineKmLatLon(lat1, lon1, lat2, lon2);
 }
 
 /**

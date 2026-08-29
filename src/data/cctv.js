@@ -46,6 +46,7 @@
  * plus CCTV-specific methods (selectCamera, cycleCamera, focusNearest, etc.).
  */
 import * as Cesium from 'cesium';
+import { haversineKm } from '../geoMath.js';
 import { registerSpriteCollection, restoreSpriteOrder } from './spriteOrder.js';
 import {
   CCTV_ACTIVATION_RESULT,
@@ -975,22 +976,6 @@ export function activationProbeClampRange(rangeM, hitDistanceM) {
   if (!Number.isFinite(nominalRange) || nominalRange <= 0) return null;
   if (!Number.isFinite(hitDistance) || hitDistance <= 0 || hitDistance >= nominalRange) return null;
   return Math.max(PROBE_MIN_RANGE_M, hitDistance - PROBE_CLEARANCE_M);
-}
-
-/**
- * Computes the great-circle distance between two points using the haversine formula.
- * @param {number} lat1 - Latitude of point 1 (degrees).
- * @param {number} lon1 - Longitude of point 1 (degrees).
- * @param {number} lat2 - Latitude of point 2 (degrees).
- * @param {number} lon2 - Longitude of point 2 (degrees).
- * @returns {number} Distance in kilometres.
- */
-function haversineKm(lat1, lon1, lat2, lon2) {
-  const dLat = toRad(lat2 - lat1);
-  const dLon = toRad(lon2 - lon1);
-  const a = Math.sin(dLat / 2) ** 2
-    + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
-  return 6371 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
 /**
