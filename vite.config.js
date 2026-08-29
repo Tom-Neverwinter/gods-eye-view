@@ -21,6 +21,8 @@
  *  16. Meshtastic — public MQTT MapReport node cache (mqtt.meshtastic.org)
  *  17. WiGLE — crowdsourced Wi-Fi network search (BYOK)
  *  18. TAK / Cursor-on-Target — read-only mutual-TLS CoT ingest (BYOS)
+ *  19. Rayhunter — personal cell-site-simulator detector tap (LAN device)
+ *  20. RTL-SDR / dump1090 — personal ADS-B receiver tap (LAN device)
  *
  * Also exposes Cesium and Google 3D Tiles API keys to the
  * client via `import.meta.env.*` defines.
@@ -1458,6 +1460,67 @@ function rayhunterProxy() {
         await proxyGet(res, `http://${base}/api/analysis-report/${name}`, 'application/x-ndjson');
       });
     },
+  };
+}
+
+/**
+ * RTL-SDR / dump1090 local receiver tap proxy (#57) — same shape and same
+ * SSRF tradeoff as rayhunterProxy() just above (a user-supplied `host:port`
+ * IS the point; the cloud-metadata target is still refused outright). The
+ * device is the user's own dump1090-fa/readsb/tar1090 instance on the LAN;
+ * its embedded web server sends no CORS headers, so this same-origin proxy
+ * exists for the same reason rayhunterProxy's does.
+ *
+ * Route: GET /api/rtlsdr/aircraft?base=host:port
+ *   -> proxies http://host:port/data/aircraft.json — the standard path
+ *      dump1090-fa, readsb, and tar1090 all serve (json shape:
+ *      {now, aircraft: [{hex, flight, lat, lon, alt_baro, gs, track,
+ *      squawk, seen, seen_pos, ...}]} — some entries have no lat/lon yet).
+ * @returns {import('vite').Plugin}
+ */
+function rtlsdrTapProxy() {
+  const BASE_RE = /^[a-zA-Z0-9.-]{1,253}:([0-9]{1,5})$/;
+  const BLOCKED_HOSTS = new Set(['169.254.169.254']);
+  const TIMEOUT_MS = 8_000;
+
+  /** @returns {?string} the validated `host:port` string, or null. */
+  function validBase(raw) {
+    const base = String(raw || '').trim();
+    const match = BASE_RE.exec(base);
+    if (!match) return null;
+    const port = Number(match[1]);
+    if (port < 1 || port > 65535) return null;
+    const host = base.slice(0, base.length - match[1].length - 1);
+    return BLOCKED_HOSTS.has(host) ? null : base;
+  }
+
+  function sendJson(res, status, obj) {
+    if (res.headersSent) return;
+    res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    res.end(JSON.stringify(obj));
+  }
+
+  const install = (middlewares) => {
+    middlewares.use('/api/rtlsdr/aircraft', async (req, res) => {
+      const base = validBase(new URL(req.url, 'http://internal').searchParams.get('base'));
+      if (!base) { sendJson(res, 400, { error: 'invalid or missing base' }); return; }
+      try {
+        const upstream = await fetch(`http://${base}/data/aircraft.json`, { signal: AbortSignal.timeout(TIMEOUT_MS) });
+        const body = await upstream.text();
+        if (res.headersSent) return;
+        res.writeHead(upstream.ok ? 200 : 502, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(upstream.ok ? body : JSON.stringify({ error: `receiver HTTP ${upstream.status}` }));
+      } catch (err) {
+        console.warn('[rtlsdr-tap-proxy] upstream fetch failed:', err?.message || err);
+        sendJson(res, 502, { error: 'receiver unreachable' });
+      }
+    });
+  };
+
+  return {
+    name: 'rtlsdr-tap-proxy',
+    configureServer(server) { install(server.middlewares); },
+    configurePreviewServer(server) { installOnPreviewIfEnabled(server, install); },
   };
 }
 
@@ -7756,6 +7819,7 @@ export default defineConfig(({ mode }) => {
       tomtomProxy(),
       firmsProxy(),
       rayhunterProxy(),
+      rtlsdrTapProxy(),
       rocketLaunchesProxy(),
       terrainHeightsProxy(),
       adsbdbProxy(),

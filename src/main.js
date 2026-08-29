@@ -21,6 +21,7 @@ import nifcWildfiresLayer from './data/nifcWildfires.js';
 import osmOverlaysLayer from './data/osmOverlays.js';
 import weatherOverlayLayer from './data/weatherOverlay.js';
 import rayhunterTapLayer from './data/rayhunterTap.js';
+import rtlsdrTapLayer from './data/rtlsdrTap.js';
 import militaryAwarenessLayer from './data/militaryAwareness.js';
 import localDataLayers from './data/localLayers.js';
 import { LAYER_STATE_REGISTRY } from './data/layerState.js';
@@ -261,6 +262,7 @@ async function init() {
     dataManager.register(osmOverlaysLayer);
     dataManager.register(weatherOverlayLayer);
     dataManager.register(rayhunterTapLayer);
+    dataManager.register(rtlsdrTapLayer);
     dataManager.register(militaryAwarenessLayer);
     militaryAwarenessLayer.attachDataManager(dataManager);
     for (const layer of localDataLayers) {

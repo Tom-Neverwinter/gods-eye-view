@@ -246,6 +246,12 @@ const OPTION_GROUPS = Object.freeze({
   rayhunter: Object.freeze([
     stringOption('base', 'b', '192.168.1.1:8080'),
   ]),
+  // The user's own dump1090/readsb receiver address (#57) — same personal,
+  // durable-per-user setting shape as `rayhunter` above, defaulting to
+  // dump1090-fa/readsb's documented default bind address.
+  rtlsdrTap: Object.freeze([
+    stringOption('base', 'b', 'localhost:8080'),
+  ]),
   radio: Object.freeze([
     Object.freeze({
       key: 'filter',
@@ -316,6 +322,7 @@ export const LAYER_STATE_REGISTRY = Object.freeze([
   Object.freeze({ id: 'radio', token: 'r', disposition: 'enabled+options', optionOwner: 'radio' }),
   Object.freeze({ id: 'rayhunter-tap', token: 'y', disposition: 'enabled+options', optionOwner: 'rayhunter' }),
   Object.freeze({ id: 'rocket-launches', token: 'x', disposition: 'enabled-only' }),
+  Object.freeze({ id: 'rtlsdr-tap', token: '1', disposition: 'enabled+options', optionOwner: 'rtlsdrTap' }),
   Object.freeze({ id: 'satellites', token: 's', disposition: 'enabled+options', optionOwner: 'satellites' }),
   Object.freeze({ id: 'tak-events', token: 'h', disposition: 'enabled-only' }),
   Object.freeze({ id: 'telegeography-submarine-cables', token: 'u', disposition: 'enabled-only' }),
