@@ -61,7 +61,7 @@ The live layers are grounded in public feeds: the airliner crossing your screen 
 
 Requires Node.js 24.14.x or 26.x (enforced by `package.json`).
 
-1. Copy `.env.example` → `.env` and set `GOOGLE_MAPS_API_KEY`.
+1. Copy `.env.example` → `.env` and set `GOOGLE_MAPS_API_KEY` (optional — skip it for the free OSM globe, or set `CESIUM_ION_TOKEN` instead for photorealistic 3D via Cesium ion, see [#71](https://github.com/bilawalsidhu/gods-eye-view/issues/71)).
 2. Install and run:
 
 ```bash
@@ -71,7 +71,7 @@ npm run dev -- --host localhost --port 4173
 
 3. Open **`http://localhost:4173`**. Cold start settles in under two seconds on a recent laptop (median 1.86 s in a point-in-time M5/Chrome capture — [docs/PERFORMANCE.md](docs/PERFORMANCE.md); a comparison baseline, not a hardware requirement). A first-run card offers to stage a mission for you — **Live Contacts**, **Space Missions**, **Environmental** — or leaves you to explore manually.
 
-**That one key is the whole entry fee.** Everything in this README is color-coded — 🟢 needs nothing · 🟡 free key · 🔴 metered — and Google Maps is the only 🔴 you need: it buys the photorealistic planet, and most of the globe lights up 🟢 from there. Full map in [Keys & Costs](#-api-keys).
+**No key is required to start.** Everything in this README is color-coded — 🟢 needs nothing · 🟡 free key · 🔴 metered — and Google Maps is the only 🔴 in the whole app: it buys the photorealistic planet (or use a free 🟡 `CESIUM_ION_TOKEN` for the same imagery via Cesium ion), while the free 🟢 OSM globe works with no key at all and most of the rest of the app lights up 🟢 from there. Full map in [Keys & Costs](#-api-keys).
 
 The dev server binds to **localhost** — your keys stay on your machine. Sharing on a LAN and the cost rails live in [Keys & Costs](#-api-keys) and [SECURITY.md](SECURITY.md).
 
