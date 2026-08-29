@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { installOnPreviewIfEnabled } from '../../vite.config.js';
+import { installOnPreviewIfEnabled } from '../../server/previewGate.js';
 
 // Issue #22: `vite preview` serves the production build and is easy to
 // mistake for a harmless static preview, but it wires up the same key-broker

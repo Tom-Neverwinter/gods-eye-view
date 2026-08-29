@@ -1,11 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  makeCostRateLimiter,
   isValidLatLon,
   validRegionalPoint,
   streetViewFallbackParams,
 } from '../../vite.config.js';
+import { makeCostRateLimiter } from '../../server/rateLimit.js';
 
 // Issues #16/#17/#18: the cost-bearing OpenAI/Google endpoints must not be
 // unlimited by default — only an explicit 0 opts out.
