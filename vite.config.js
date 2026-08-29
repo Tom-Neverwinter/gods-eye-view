@@ -1998,6 +1998,101 @@ function tomtomProxy() {
 }
 
 /**
+ * Rayhunter (EFF cell-site-simulator/IMSI-catcher detector) local-device proxy (#56).
+ *
+ * Unlike every other proxy in this file, the upstream is not a fixed public
+ * host — it's the user's OWN Rayhunter device on their local network (ships
+ * flashed onto an Orbic hotspot, default http://192.168.1.1:8080 per
+ * EFForg/rayhunter's install docs). The browser can't fetch it directly:
+ * embedded-device web servers like Rayhunter's send no CORS headers, so a
+ * cross-origin browser fetch would be blocked. This dev-server middleware
+ * runs on the user's own machine, so it CAN reach that LAN address; the
+ * browser just calls this same-origin path instead.
+ *
+ * Real API, verified against EFForg/rayhunter's source (daemon/src/main.rs
+ * route table + daemon/src/stats.rs + daemon/src/diag.rs, not guessed):
+ *   GET /api/qmdl-manifest        → {entries: ManifestEntry[], current_entry}
+ *   GET /api/analysis-report/:name → NDJSON: first line ReportMetadata, then
+ *     one AnalysisRow per line: {packet_timestamp, skipped_message_reason,
+ *     events: [{event_type: Informational|Low|Medium|High, message}|null]}.
+ *     :name is "live" for the in-progress recording, or a manifest entry name.
+ * No auth on either route (confirmed: no auth middleware in the route table).
+ *
+ * `base` (host:port) is genuinely user-supplied per request — that's the
+ * whole point, unlike every other proxy's fixed upstream — so it's checked
+ * against a plain `host:port` shape and the cloud-metadata SSRF target
+ * (169.254.169.254) is refused outright regardless of context. The rest of
+ * this file's heavier defenses (byte caps, redirect/DNS-rebinding pinning
+ * like radio-browser-proxy) are deliberately NOT applied here: the target is
+ * hardware the user owns and chose to point this at, not an
+ * attacker-controlled URL, and the response (sparse warning rows, mostly)
+ * is naturally small. If this dev server is LAN-exposed (HOST=0.0.0.0), the
+ * same tradeoff SECURITY.md's "Network exposure" section already documents
+ * for every other proxy applies here too — anyone on that LAN can drive this
+ * proxy at any address the host machine can reach, not just the intended
+ * Rayhunter device.
+ *
+ * Routes: GET /api/rayhunter/manifest?base=host:port
+ *         GET /api/rayhunter/analysis/:name?base=host:port
+ * @returns {import('vite').Plugin}
+ */
+function rayhunterProxy() {
+  const BASE_RE = /^[a-zA-Z0-9.-]{1,253}:([0-9]{1,5})$/;
+  const NAME_RE = /^(live|[A-Za-z0-9_.-]{1,128})$/;
+  const BLOCKED_HOSTS = new Set(['169.254.169.254']);
+  const TIMEOUT_MS = 8_000;
+
+  /** @returns {?string} the validated `host:port` string, or null. */
+  function validBase(raw) {
+    const base = String(raw || '').trim();
+    const match = BASE_RE.exec(base);
+    if (!match) return null;
+    const port = Number(match[1]);
+    if (port < 1 || port > 65535) return null;
+    const host = base.slice(0, base.length - match[1].length - 1);
+    return BLOCKED_HOSTS.has(host) ? null : base;
+  }
+
+  function sendJson(res, status, obj) {
+    if (res.headersSent) return;
+    res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    res.end(JSON.stringify(obj));
+  }
+
+  async function proxyGet(res, url, contentType) {
+    try {
+      const upstream = await fetch(url, { signal: AbortSignal.timeout(TIMEOUT_MS) });
+      const body = await upstream.text();
+      if (res.headersSent) return;
+      res.writeHead(upstream.ok ? 200 : 502, { 'Content-Type': contentType, 'Cache-Control': 'no-store' });
+      res.end(upstream.ok ? body : JSON.stringify({ error: `rayhunter device HTTP ${upstream.status}` }));
+    } catch (err) {
+      console.warn('[rayhunter-proxy] upstream fetch failed:', err?.message || err);
+      sendJson(res, 502, { error: 'rayhunter device unreachable' });
+    }
+  }
+
+  return {
+    name: 'rayhunter-proxy',
+    configureServer(server) {
+      server.middlewares.use('/api/rayhunter/manifest', async (req, res) => {
+        const base = validBase(new URL(req.url, 'http://internal').searchParams.get('base'));
+        if (!base) { sendJson(res, 400, { error: 'invalid or missing base' }); return; }
+        await proxyGet(res, `http://${base}/api/qmdl-manifest`, 'application/json');
+      });
+      server.middlewares.use('/api/rayhunter/analysis', async (req, res) => {
+        const url = new URL(req.url, 'http://internal');
+        const base = validBase(url.searchParams.get('base'));
+        const name = url.pathname.slice(1); // mount path already stripped by connect
+        if (!base) { sendJson(res, 400, { error: 'invalid or missing base' }); return; }
+        if (!NAME_RE.test(name)) { sendJson(res, 400, { error: 'invalid recording name' }); return; }
+        await proxyGet(res, `http://${base}/api/analysis-report/${name}`, 'application/x-ndjson');
+      });
+    },
+  };
+}
+
+/**
  * NASA FIRMS live active-fire proxy with a memory + disk cache.
  * Upstream: https://firms.modaps.eosdis.nasa.gov/api/area/csv/{KEY}/{SOURCE}/world/2
  *
@@ -7681,6 +7776,7 @@ export default defineConfig(({ mode }) => {
       celestrakProxy(),
       tomtomProxy(),
       firmsProxy(),
+      rayhunterProxy(),
       rocketLaunchesProxy(),
       terrainHeightsProxy(),
       adsbdbProxy(),
