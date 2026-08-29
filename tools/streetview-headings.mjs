@@ -57,10 +57,20 @@ function parseArgs() {
   return opts;
 }
 
+// This tool calls Street View Static — a server-side Google API, not one the
+// browser bundle loads — so it prefers GOOGLE_MAPS_SERVER_API_KEY and only
+// falls back to the browser-exposed GOOGLE_MAPS_API_KEY (#33). Without this,
+// restricting the browser key to just the client's APIs would break the tool.
+// Order below is the preference order, for env vars and .env lines alike.
+const KEY_ENV_VARS = ['GOOGLE_MAPS_SERVER_API_KEY', 'GOOGLE_MAPS_API_KEY'];
+
 function loadApiKey(overrideKey) {
   if (overrideKey) return overrideKey;
-  if (process.env.GOOGLE_MAPS_API_KEY) return process.env.GOOGLE_MAPS_API_KEY;
+  for (const name of KEY_ENV_VARS) {
+    if (process.env[name]) return process.env[name];
+  }
 
+  const fromDotenv = {};
   try {
     const envPath = join(PROJECT_ROOT, '.env');
     const envContent = readFileSync(envPath, 'utf8');
@@ -70,11 +80,16 @@ function loadApiKey(overrideKey) {
       const eqIdx = trimmed.indexOf('=');
       const key = trimmed.slice(0, eqIdx).trim();
       const val = trimmed.slice(eqIdx + 1).trim();
-      if (key === 'GOOGLE_MAPS_API_KEY' && val) return val;
+      if (KEY_ENV_VARS.includes(key) && val) fromDotenv[key] = val;
     }
   } catch { /* ignore */ }
+  // Preference order, not .env line order — the server key wins even though
+  // .env.example lists the browser key first.
+  for (const name of KEY_ENV_VARS) {
+    if (fromDotenv[name]) return fromDotenv[name];
+  }
 
-  console.error('Error: No API key found. Set GOOGLE_MAPS_API_KEY in .env or pass --key.');
+  console.error('Error: No API key found. Set GOOGLE_MAPS_SERVER_API_KEY (or GOOGLE_MAPS_API_KEY) in .env or pass --key.');
   process.exit(1);
 }
 
