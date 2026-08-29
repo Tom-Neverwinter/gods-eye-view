@@ -2064,6 +2064,10 @@ export class DataLayerManager {
       const bottomRow = document.createElement('div');
       bottomRow.className = 'data-toggle-meta';
       bottomRow.textContent = this._buildMetaText(layer);
+      // Also as a hover tooltip (#90) — the meta line already carries the
+      // reason a layer is unavailable (e.g. "KEY REQUIRED"), but it's easy
+      // to miss as a permanently-visible line under a dense toggle grid.
+      row.title = bottomRow.textContent;
 
       row.appendChild(topRow);
       row.appendChild(bottomRow);
@@ -2216,6 +2220,7 @@ export class DataLayerManager {
       const meta = row.querySelector('.data-toggle-meta');
       if (meta) {
         meta.textContent = this._buildMetaText(layer);
+        row.title = meta.textContent;
       }
 
       this._syncRowControls(row.querySelector('.data-toggle-controls'), layer);
