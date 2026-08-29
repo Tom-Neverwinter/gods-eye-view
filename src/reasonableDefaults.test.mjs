@@ -38,9 +38,14 @@ import {
 } from './scopeMask.js';
 import { ShareLinkManager } from './sharelink.js';
 
-const uiSource = fs.readFileSync(new URL('./ui.js', import.meta.url), 'utf8');
-const indexHtml = fs.readFileSync(new URL('../index.html', import.meta.url), 'utf8');
-const shareSource = fs.readFileSync(new URL('./sharelink.js', import.meta.url), 'utf8');
+// Anchors below are LF literals (e.g. '\n  }\n'). Normalize CRLF checkouts
+// (Windows, core.autocrlf=true — #88) so substring search isn't line-ending
+// sensitive; a straight indexOf already tolerates CRLF for anchors that don't
+// straddle a line ending, which is why only some anchors used to fail.
+const normalizeEol = (text) => text.replace(/\r\n/g, '\n');
+const uiSource = normalizeEol(fs.readFileSync(new URL('./ui.js', import.meta.url), 'utf8'));
+const indexHtml = normalizeEol(fs.readFileSync(new URL('../index.html', import.meta.url), 'utf8'));
+const shareSource = normalizeEol(fs.readFileSync(new URL('./sharelink.js', import.meta.url), 'utf8'));
 
 /** Slice ui.js between two literal anchors, so a pin reads one method, not the file. */
 function uiBlock(start, end) {
