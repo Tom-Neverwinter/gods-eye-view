@@ -22,15 +22,18 @@ The golden rule: **secret-bearing API keys stay on the server side.** The dev/pr
 | OpenSky OAuth (`OPENSKY_CLIENT_ID/SECRET`) | Server only | Server mints + refreshes the token behind `/api/opensky` |
 | `WIGLE_API_NAME` / `WIGLE_API_TOKEN` | Server only | Server does the Basic-Auth WiGLE query; browser fetches the same-origin `/api/wigle/search` cache |
 | `TAK_CLIENT_CERT_PATH` / `TAK_CLIENT_KEY_PATH` / `TAK_CLIENT_KEY_PASSPHRASE` | Server only (local file paths, never uploaded) | Server holds the one mutual-TLS TAK Server connection; browser polls the same-origin `/api/tak/events` cache |
+| `GOOGLE_MAPS_SERVER_API_KEY` (optional, #33) | Server only | Server calls Places (`/api/google/nearby-places`, `/api/google/text-search`) and the Street View fallback with this key; falls back to `GOOGLE_MAPS_API_KEY` when unset |
 
 ### Two deliberately client-side keys — restrict them
 
 These are designed to be used directly in the browser (like a Mapbox public token). They are injected into the client bundle via Vite's `define`, so they **will** be visible in browser devtools. Scope and restrict them rather than trying to hide them:
 
-1. **Google Maps API key** — loads the Photorealistic 3D Tiles in the browser. **Restrict it** (HTTP referrer + API restriction to the Map Tiles API) in the Google Cloud Console. An unrestricted key in a public deployment can be abused and billed to you.
+1. **Google Maps API key** — loads the Photorealistic 3D Tiles and the browser-side geocoder in the browser. **Restrict it** (HTTP referrer + API restriction to Map Tiles API + Geocoding API only) in the Google Cloud Console. An unrestricted key in a public deployment can be abused and billed to you.
 2. **Cesium ion token** (`CESIUM_ION_TOKEN`, optional — only for the Bing world-imagery map stacks) — used as `Cesium.Ion.defaultAccessToken` client-side. Use a public **`assets:read`** token with **URL restrictions** for any hosted deployment.
 
 > The Vite `define` block in `vite.config.js` controls exactly what reaches the client: only these two keys plus two non-secret CCTV feature flags. Everything else stays server-side.
+
+**Places and Street View never needed to be on that list** (#33): they're called from the server-side proxies in the table above, using `GOOGLE_MAPS_SERVER_API_KEY` when set. Splitting it from the browser-exposed key means each key's Google Cloud restriction can actually match what it does — the browser key referrer-restricted to Map Tiles/Geocoding, the server key IP-restricted (never a referrer, since it never leaves your server) to Places/Street View — instead of one key that has to be either over-permissioned or broken for one of its two jobs. A single shared `GOOGLE_MAPS_API_KEY` still works if you don't split them; it just has to cover all four APIs.
 
 Never commit real keys. `.env` is gitignored; only `.env.example` (placeholder names) is tracked. On macOS the launcher reads keys from the Keychain; on other platforms use env vars or a local `.env`.
 

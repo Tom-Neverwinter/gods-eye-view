@@ -4236,9 +4236,15 @@ function cctvProxy() {
     };
   };
 
-  /** Fetch a Google Street View static image as a fallback frame. Requires GOOGLE_MAPS_API_KEY. */
+  /**
+   * Fetch a Google Street View static image as a fallback frame. Server-side
+   * call, never reaches the browser — prefers GOOGLE_MAPS_SERVER_API_KEY
+   * (#33: a key scoped to Street View Static/Places, restricted by server IP
+   * rather than HTTP referrer) and falls back to the browser-exposed
+   * GOOGLE_MAPS_API_KEY for setups that haven't split the two yet.
+   */
   const streetViewFallback = async ({ lat, lon, heading, fov, pitch }) => {
-    const streetViewKey = process.env.GOOGLE_MAPS_API_KEY;
+    const streetViewKey = process.env.GOOGLE_MAPS_SERVER_API_KEY || process.env.GOOGLE_MAPS_API_KEY;
     if (!streetViewKey || !Number.isFinite(lat) || !Number.isFinite(lon)) return null;
     try {
       const sv = new URL('https://maps.googleapis.com/maps/api/streetview');
@@ -5684,11 +5690,14 @@ function googlePlacesContextProxy() {
         return;
       }
 
-      const apiKey = process.env.GOOGLE_MAPS_API_KEY;
+      // Server-side call, never reaches the browser — prefer a key scoped to
+      // Places (#33), falling back to the browser-exposed key for setups
+      // that haven't split the two yet.
+      const apiKey = process.env.GOOGLE_MAPS_SERVER_API_KEY || process.env.GOOGLE_MAPS_API_KEY;
       if (!apiKey) {
         res.statusCode = 503;
         res.setHeader('Content-Type', 'application/json');
-        res.end(JSON.stringify({ error: 'GOOGLE_MAPS_API_KEY is not set', places: [] }));
+        res.end(JSON.stringify({ error: 'GOOGLE_MAPS_SERVER_API_KEY (or GOOGLE_MAPS_API_KEY) is not set', places: [] }));
         return;
       }
 
@@ -5798,11 +5807,14 @@ function googlePlacesContextProxy() {
         return;
       }
 
-      const apiKey = process.env.GOOGLE_MAPS_API_KEY;
+      // Server-side call, never reaches the browser — prefer a key scoped to
+      // Places (#33), falling back to the browser-exposed key for setups
+      // that haven't split the two yet.
+      const apiKey = process.env.GOOGLE_MAPS_SERVER_API_KEY || process.env.GOOGLE_MAPS_API_KEY;
       if (!apiKey) {
         res.statusCode = 503;
         res.setHeader('Content-Type', 'application/json');
-        res.end(JSON.stringify({ error: 'GOOGLE_MAPS_API_KEY is not set', places: [] }));
+        res.end(JSON.stringify({ error: 'GOOGLE_MAPS_SERVER_API_KEY (or GOOGLE_MAPS_API_KEY) is not set', places: [] }));
         return;
       }
 
