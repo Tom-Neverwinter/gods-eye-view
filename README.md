@@ -69,7 +69,7 @@ The live layers are grounded in public feeds: the airliner crossing your screen 
 
 Requires Node.js 24.14.x or 26.x (enforced by `package.json`).
 
-1. Copy `.env.example` → `.env` and set `GOOGLE_MAPS_API_KEY`.
+1. Copy `.env.example` → `.env` and set `GOOGLE_MAPS_API_KEY` (optional — skip it for the free OSM globe, or set `CESIUM_ION_TOKEN` instead for photorealistic 3D via Cesium ion, see [#71](https://github.com/bilawalsidhu/gods-eye-view/issues/71)).
 2. Install and run:
 
 ```bash
@@ -84,15 +84,16 @@ npm run dev -- --host localhost --port 4173
 >
 > ```text
 > Clone https://github.com/bilawalsidhu/gods-eye-view and set it up on my machine.
-> Install everything it needs, walk me through getting the required Google Maps API
-> key step by step (plus any optional free keys I want), put the keys in .env, and
-> help me set a billing alert and a usage quota on the Google key so I can't
-> overspend. Then start the dev server and open it in my browser. I'm not a
-> developer — explain what you're doing as you go, and ask me before any step
-> that could cost money.
+> Install everything it needs, walk me through getting a Google Maps API key
+> step by step if I want the photorealistic 3D globe (it's optional — the app
+> runs on the free OSM globe with no key at all), plus any other optional free
+> keys I want, put the keys in .env, and help me set a billing alert and a
+> usage quota on the Google key so I can't overspend. Then start the dev
+> server and open it in my browser. I'm not a developer — explain what you're
+> doing as you go, and ask me before any step that could cost money.
 > ```
 
-**That one key is the whole entry fee.** Everything in this README is color-coded — 🟢 needs nothing · 🟡 free key · 🔴 metered — and Google Maps is the only 🔴 you need: it buys the photorealistic planet, and most of the globe lights up 🟢 from there. For typical solo exploring, expect **$0 on most layers** and pocket change on the metered two: Google currently gives **1,000 free 3D-tile sessions a month** — each good for up to three hours of rendering, which is very hard for one person to exhaust — and voice carries a built-in $5 session cap. Full map in [Keys & Costs](#-api-keys), full honest breakdown in [What it actually costs](#-what-it-actually-costs).
+**No key is required to start.** Everything in this README is color-coded — 🟢 needs nothing · 🟡 free key · 🔴 metered — and Google Maps is the only 🔴 in the whole app: it buys the photorealistic planet (or use a free 🟡 `CESIUM_ION_TOKEN` for the same imagery via Cesium ion), while the free 🟢 OSM globe works with no key at all and most of the rest of the app lights up 🟢 from there. For typical solo exploring with the Google key set, expect **$0 on most layers** and pocket change on the one metered layer: Google currently gives **1,000 free 3D-tile sessions a month** — each good for up to three hours of rendering, which is very hard for one person to exhaust — and voice carries a built-in $5 session cap. Full map in [Keys & Costs](#-api-keys), full honest breakdown in [What it actually costs](#-what-it-actually-costs).
 
 The dev server binds to **localhost** — your keys stay on your machine. Sharing on a LAN safely is covered in [Sharing an instance](#-sharing-an-instance) and [SECURITY.md](SECURITY.md).
 

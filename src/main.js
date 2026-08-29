@@ -79,15 +79,17 @@ async function init() {
       Cesium.Ion.defaultAccessToken = cesiumToken;
     }
 
-    // Set Google Maps API key for 3D Tiles
+    // Google Maps API key is optional (#59, #64): without one, or if Google's
+    // Map Tiles API rejects the key/billing account (EEA accounts get a 401 —
+    // #59), 3D tile loading below falls through to Cesium ion's mirror of the
+    // same imagery (#71), then to the keyless OSM/terrain stack (#64) instead
+    // of refusing to start.
     const googleApiKey = import.meta.env.GOOGLE_MAPS_API_KEY;
-    if (!googleApiKey) {
-      throw new Error('GOOGLE_MAPS_API_KEY not found. Set it as an environment variable.');
+    if (googleApiKey) {
+      Cesium.GoogleMaps.defaultApiKey = googleApiKey;
+      // Expose API key globally for geocoding in locations.js
+      window.__GOOGLE_MAPS_API_KEY__ = googleApiKey;
     }
-    Cesium.GoogleMaps.defaultApiKey = googleApiKey;
-
-    // Expose API key globally for geocoding in locations.js
-    window.__GOOGLE_MAPS_API_KEY__ = googleApiKey;
 
     // Create the Cesium viewer with minimal chrome
     const viewer = new Cesium.Viewer('cesiumContainer', {
@@ -153,22 +155,43 @@ async function init() {
     viewer.scene.skyAtmosphere.saturationShift = -0.12;
     viewer.scene.skyAtmosphere.brightnessShift = -0.08;
 
-    loaderStatus.textContent = 'Loading Google 3D Tiles...';
+    loaderStatus.textContent = 'Loading 3D Tiles...';
     let tileset = null;
-    try {
-      // Load Google Photorealistic 3D Tiles
-      tileset = await Cesium.createGooglePhotorealistic3DTileset({
-        onlyUsingWithGoogleGeocoder: true,
-      });
+    let tileErrorDetail = '';
+    if (googleApiKey) {
+      try {
+        // Preferred: Google Photorealistic 3D Tiles via the Google Maps Platform key.
+        tileset = await Cesium.createGooglePhotorealistic3DTileset({
+          onlyUsingWithGoogleGeocoder: true,
+        });
+      } catch (tileError) {
+        console.warn('[Init] Google 3D Tiles unavailable via Maps API key:', tileError);
+        tileErrorDetail = describeError(tileError);
+      }
+    }
+    if (!tileset && cesiumToken) {
+      try {
+        // Fallback (#71): Cesium ion mirrors Google Photorealistic 3D Tiles as
+        // a public global asset (id 2275207), reachable from accounts/regions
+        // where the Map Tiles API itself 401s (EEA billing, #59), using only
+        // a free Cesium ion "assets:read" token.
+        tileset = await Cesium.Cesium3DTileset.fromIonAssetId(2275207);
+      } catch (tileError) {
+        console.warn('[Init] Google 3D Tiles unavailable via Cesium ion:', tileError);
+        tileErrorDetail = tileErrorDetail || describeError(tileError);
+      }
+    }
+    if (tileset) {
       viewer.scene.primitives.add(tileset);
       // NOTE: Cesium World Terrain intentionally disabled — conflicts with Google 3D Tiles at high zoom.
       // Google Photorealistic 3D Tiles provide their own terrain/elevation.
       viewer.scene.globe.show = false;
-    } catch (tileError) {
-      console.warn('[Init] Google 3D Tiles unavailable, falling back to Cesium globe:', tileError);
-      const tileErrorDetail = describeError(tileError);
-      loaderStatus.textContent = `Google 3D Tiles unavailable (${tileErrorDetail}). Continuing in fallback mode...`;
-      // Keep Cesium globe visible as fallback instead of aborting the app.
+    } else {
+      // Keyless fallback (#64): no Google key, no Cesium token, or both failed —
+      // continue on the free OSM/terrain globe instead of aborting the app.
+      loaderStatus.textContent = tileErrorDetail
+        ? `3D Tiles unavailable (${tileErrorDetail}). Continuing in fallback mode...`
+        : 'Continuing with free OSM globe...';
       viewer.scene.globe.show = true;
     }
 
