@@ -33,7 +33,6 @@ import { promises as fsp } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { Readable } from 'node:stream';
-import http from 'node:http';
 import https from 'node:https';
 import { lookup as lookupDns } from 'node:dns/promises';
 import { directionToHeading } from './src/data/directionText.js';
@@ -63,7 +62,7 @@ import { defineConfig, loadEnv } from 'vite';
 import cesium from 'vite-plugin-cesium';
 import { makeRateLimiter, makeCostRateLimiter, openAiRateLimiter, googleRateLimiter, enforceOptInRateLimit, clientKey } from './server/rateLimit.js';
 import { installOnPreviewIfEnabled } from './server/previewGate.js';
-import { readResponseTextCapped, readResponseJsonCapped, coalesceProxyRequest } from './server/httpProxyUtils.js';
+import { readResponseTextCapped, readResponseJsonCapped, coalesceProxyRequest, fetchPinnedGet } from './server/httpProxyUtils.js';
 import { radioBrowserProxy, isPublicRadioAddress } from './server/radioBrowserProxy.js';
 import {
   normalizeRegionalArticles,
@@ -3996,46 +3995,6 @@ async function resolvePublicMediaAddresses(hostname, lookupImpl = lookupDns) {
 }
 
 /**
- * Issue a GET pinned to pre-resolved addresses — http or https, whichever
- * the URL calls for (the radio proxy only ever needs https; CCTV sources can
- * be either). A DNS answer that changes between the resolve check and this
- * connect can't redirect the request, because the connection itself is
- * forced to `addresses`, never a fresh lookup.
- * @param {URL} url
- * @param {{headers?: object, signal?: AbortSignal}} options
- * @param {Array<{address:string,family?:number}>} addresses
- * @returns {Promise<Response>}
- */
-function fetchPinnedMediaGet(url, { headers, signal } = {}, addresses) {
-  return new Promise((resolve, reject) => {
-    const address = addresses[0];
-    const transport = url.protocol === 'http:' ? http : https;
-    const request = transport.request(url, {
-      method: 'GET',
-      headers,
-      signal,
-      lookup(_hostname, lookupOptions, callback) {
-        if (lookupOptions?.all) callback(null, addresses);
-        else callback(null, address.address, address.family);
-      },
-    }, (response) => {
-      const responseHeaders = new Headers();
-      for (const [name, value] of Object.entries(response.headers)) {
-        if (Array.isArray(value)) value.forEach((item) => responseHeaders.append(name, item));
-        else if (value !== undefined) responseHeaders.set(name, String(value));
-      }
-      resolve(new Response(Readable.toWeb(response), {
-        status: response.statusCode || 500,
-        statusText: response.statusMessage || '',
-        headers: responseHeaders,
-      }));
-    });
-    request.on('error', reject);
-    request.end();
-  });
-}
-
-/**
  * DNS-pinned, SSRF-checked GET for an operator-registered CCTV media URL
  * (#29). Returns null (never throws) for an implausible URL, a resolve
  * failure/non-public result, or a connection error — every caller already
@@ -4051,7 +4010,7 @@ async function fetchCctvUpstream(rawUrl, options = {}) {
   const addresses = await resolvePublicMediaAddresses(url.hostname);
   if (!addresses) return null;
   try {
-    return await fetchPinnedMediaGet(url, options, addresses);
+    return await fetchPinnedGet(url, options, addresses);
   } catch {
     return null;
   }

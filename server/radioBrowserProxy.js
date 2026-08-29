@@ -8,11 +8,9 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { Readable } from 'node:stream';
-import https from 'node:https';
 import { lookup as lookupDns } from 'node:dns/promises';
 import { normalizeRadioCountryInput } from '../src/data/radioCountry.js';
-import { readResponseTextCapped } from './httpProxyUtils.js';
+import { readResponseTextCapped, fetchPinnedGet } from './httpProxyUtils.js';
 
 const RADIO_DIRECTORY_CACHE_MS = 45 * 60 * 1000;
 const RADIO_DIRECTORY_STALE_MS = 7 * 24 * 60 * 60 * 1000;
@@ -225,34 +223,6 @@ async function resolveRadioProxyAddresses(hostname, lookupImpl) {
   return addresses;
 }
 
-function fetchPinnedRadioResponse(url, options, addresses) {
-  return new Promise((resolve, reject) => {
-    const address = addresses[0];
-    const request = https.request(url, {
-      method: 'GET',
-      headers: options.headers,
-      signal: options.signal,
-      lookup(_hostname, lookupOptions, callback) {
-        if (lookupOptions?.all) callback(null, addresses);
-        else callback(null, address.address, address.family);
-      },
-    }, (response) => {
-      const headers = new Headers();
-      for (const [name, value] of Object.entries(response.headers)) {
-        if (Array.isArray(value)) value.forEach((item) => headers.append(name, item));
-        else if (value !== undefined) headers.set(name, String(value));
-      }
-      resolve(new Response(Readable.toWeb(response), {
-        status: response.statusCode || 500,
-        statusText: response.statusMessage || '',
-        headers,
-      }));
-    });
-    request.on('error', reject);
-    request.end();
-  });
-}
-
 async function mapRadioConcurrent(values, concurrency, mapper) {
   const results = new Array(values.length);
   let cursor = 0;
@@ -295,7 +265,7 @@ export function createRadioProxyMiddleware({ fetchImpl = null, lookupImpl = look
       };
       const response = fetchImpl
         ? await fetchImpl(destination.href, options)
-        : await fetchPinnedRadioResponse(destination, options, addresses);
+        : await fetchPinnedGet(destination, options, addresses);
       if (response.status >= 300 && response.status < 400) {
         try { await response.body?.cancel?.(); } catch { /* no-op */ }
         throw new Error('Radio Browser redirects are refused');
