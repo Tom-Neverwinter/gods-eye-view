@@ -67,6 +67,12 @@ export const DATA_CREDITS = [
     html: 'Earthquakes: Data courtesy of the U.S. Geological Survey',
   },
   {
+    key: 'rainviewer',
+    html:
+      'Weather radar / satellite overlay: ' +
+      '<a href="https://www.rainviewer.com/api.html" target="_blank" rel="noopener">© RainViewer</a>',
+  },
+  {
     key: 'overpass',
     html:
       'Road geometry (traffic): ' +

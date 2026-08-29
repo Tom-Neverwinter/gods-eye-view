@@ -223,6 +223,14 @@ const OPTION_GROUPS = Object.freeze({
     booleanOption('showProjection', 'p', true),
     booleanOption('autoHop', 'a', false),
   ]),
+  // Two independently toggleable RainViewer overlays (#85), same
+  // "one master row, several booleans" shape as `cctv`/`radio` above, not a
+  // new mechanism. Satellite defaults off — RainViewer's free satellite
+  // feed is intermittently empty, unlike radar (see weatherOverlay.js).
+  weatherOverlay: Object.freeze([
+    booleanOption('radar', 'r', true),
+    booleanOption('satellite', 's', false),
+  ]),
   radio: Object.freeze([
     Object.freeze({
       key: 'filter',
@@ -291,6 +299,7 @@ export const LAYER_STATE_REGISTRY = Object.freeze([
   Object.freeze({ id: 'satellites', token: 's', disposition: 'enabled+options', optionOwner: 'satellites' }),
   Object.freeze({ id: 'telegeography-submarine-cables', token: 'u', disposition: 'enabled-only' }),
   Object.freeze({ id: 'traffic', token: 't', disposition: 'enabled-only' }),
+  Object.freeze({ id: 'weather-overlay', token: 'o', disposition: 'enabled+options', optionOwner: 'weatherOverlay' }),
 ]);
 
 export const REGISTERED_LAYER_IDS = Object.freeze(LAYER_STATE_REGISTRY.map((entry) => entry.id));
