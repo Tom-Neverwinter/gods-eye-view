@@ -113,19 +113,15 @@ function suffixVariants(norm) {
 /** @type {Array|null} flat entry list for listRegions() */
 let _entries = null;
 
-const isNode = typeof process !== 'undefined' && !!process.versions?.node
-  && typeof window === 'undefined';
-
+// A dynamic JSON import with an explicit `type: 'json'` attribute works
+// identically under Node's native loader (`node --test`, scripts/) and under
+// Vite (dev + build, still code-split into its own lazy chunk) — one path
+// for both, and neither one ever references `node:fs`, so the browser build
+// has nothing to externalize (#34).
 async function loadPackFile(base) {
-  if (isNode) {
-    const { readFileSync } = await import(/* @vite-ignore */ 'node:fs');
-    const url = new URL(`./local_data/natural_earth/${base}.json`, import.meta.url);
-    return JSON.parse(readFileSync(url, 'utf8'));
-  }
-  // Vite bundles these JSON files as modules (same pattern as neighborhoodPolygons.js)
   const mod = base === 'regions'
-    ? await import('./local_data/natural_earth/regions.json')
-    : await import('./local_data/natural_earth/marine.json');
+    ? await import('./local_data/natural_earth/regions.json', { with: { type: 'json' } })
+    : await import('./local_data/natural_earth/marine.json', { with: { type: 'json' } });
   return mod.default || mod;
 }
 
