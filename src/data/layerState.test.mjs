@@ -155,8 +155,8 @@ function encode(state) {
 
 test('production registry is exact, canonical, and rejects incomplete contracts', async () => {
   assert.equal(validateLayerStateRegistry(), true);
-  assert.equal(REGISTERED_LAYER_IDS.length, 25);
-  assert.equal(new Set(REGISTERED_LAYER_IDS).size, 25);
+  assert.equal(REGISTERED_LAYER_IDS.length, 26);
+  assert.equal(new Set(REGISTERED_LAYER_IDS).size, 26);
   assert.deepEqual(REGISTERED_LAYER_IDS, [...REGISTERED_LAYER_IDS].sort());
   assert.throws(
     () => validateLayerStateRegistry([...LAYER_STATE_REGISTRY, LAYER_STATE_REGISTRY[0]]),
@@ -220,6 +220,63 @@ test('v2 codec distinguishes absent from empty and keeps canonical deterministic
   });
   assert.equal(encode(first), encode(second));
   assert.deepEqual(decodeLayerStateParams(new URLSearchParams(encode(first))), first);
+});
+
+test('a non-self-referential option owner (rayhunter-tap owns "rayhunter", osm-overlays owns "osmOverlays") encodes without crashing and round-trips', () => {
+  // Regression: encodeLayerStateParams used to look up the owning entry's
+  // token via REGISTRY_BY_ID.get(ownerId) — correct only when optionOwner
+  // happens to equal the layer's own id (flights/cctv/radio/satellites are
+  // self-referential; rayhunter-tap's owner is 'rayhunter', osm-overlays'
+  // is 'osmOverlays' — neither matches its id), so encoding any NON-default
+  // value for either threw `Cannot read properties of undefined`. Every
+  // existing test exercised only the two self-referential owners, so this
+  // was never caught.
+  const rayhunterState = normalizeLayerState({
+    enabledLayerIds: ['rayhunter-tap'],
+    options: { rayhunter: { base: '10.0.0.5:9999' } },
+  });
+  assert.doesNotThrow(() => encode(rayhunterState));
+  assert.deepEqual(decodeLayerStateParams(new URLSearchParams(encode(rayhunterState))), rayhunterState);
+
+  const osmState = normalizeLayerState({
+    enabledLayerIds: ['osm-overlays'],
+    options: { osmOverlays: { seamap: true, snowmap: false } },
+  });
+  assert.doesNotThrow(() => encode(osmState));
+  assert.deepEqual(decodeLayerStateParams(new URLSearchParams(encode(osmState))), osmState);
+});
+
+test('a mirrored-options entry (military mirrors flights) still encodes under its OWNING layer\'s token', () => {
+  const state = normalizeLayerState({
+    enabledLayerIds: ['flights'],
+    options: { flights: { models3dMode: 'all' } }, // non-default, non-absent value
+  });
+  const paramString = encode(state);
+  assert.match(paramString, /(?:^|_)f\.m\./, 'flights (token f) owns the encoding, not military (token m)');
+  assert.doesNotMatch(paramString, /(?:^|_)m\.m\./, 'military must never appear as an owner-token prefix');
+});
+
+test('a string option value containing the codec\'s own "." and "_" delimiters round-trips intact', () => {
+  // stringOption/urlOption values are slotted into `ownerToken.optionToken.value`
+  // assignments joined by `_` — a raw '.' or '_' in the value used to be
+  // silently mis-split (truncated at the first '.', or spliced into a bogus
+  // extra assignment at a '_') instead of round-tripping.
+  const state = normalizeLayerState({
+    enabledLayerIds: ['rtlsdr-tap'],
+    options: { rtlsdrTap: { base: 'my_receiver.local:8080' } },
+  });
+  const decoded = decodeLayerStateParams(new URLSearchParams(encode(state)));
+  assert.equal(decoded.options.rtlsdrTap.base, 'my_receiver.local:8080');
+});
+
+test('urlOption preserves case (unlike stringOption) — a GTFS-Realtime feed URL round-trips exact-case', () => {
+  const url = 'https://cdn.mbta.com/realtime/VehiclePositions.pb?Foo=Bar';
+  const state = normalizeLayerState({
+    enabledLayerIds: ['gtfs-realtime-tap'],
+    options: { gtfsRealtimeTap: { feedUrl: url } },
+  });
+  const decoded = decodeLayerStateParams(new URLSearchParams(encode(state)));
+  assert.equal(decoded.options.gtfsRealtimeTap.feedUrl, url, 'case must survive — a URL path/query is case-sensitive');
 });
 
 test('unknown enabled-layer tokens reject the payload instead of becoming an empty set', () => {

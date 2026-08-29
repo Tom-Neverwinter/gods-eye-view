@@ -23,6 +23,7 @@
  *  18. TAK / Cursor-on-Target — read-only mutual-TLS CoT ingest (BYOS)
  *  19. Rayhunter — personal cell-site-simulator detector tap (LAN device)
  *  20. RTL-SDR / dump1090 — personal ADS-B receiver tap (LAN device)
+ *  21. GTFS-Realtime — transit vehicle-position tap (BYOS feed URL)
  *
  * Also exposes Cesium and Google 3D Tiles API keys to the
  * client via `import.meta.env.*` defines.
@@ -67,6 +68,7 @@ import { installOnPreviewIfEnabled } from './server/previewGate.js';
 import { readResponseTextCapped, readResponseJsonCapped, coalesceProxyRequest, fetchPinnedGet } from './server/httpProxyUtils.js';
 import { haversineKm } from './src/geoMath.js';
 import { radioBrowserProxy, isPublicRadioAddress } from './server/radioBrowserProxy.js';
+import { decodeGtfsRealtimeFeed } from './server/gtfsRealtimeDecode.js';
 import {
   normalizeRegionalArticles,
   normalizeRegionalPlace,
@@ -1519,6 +1521,86 @@ function rtlsdrTapProxy() {
 
   return {
     name: 'rtlsdr-tap-proxy',
+    configureServer(server) { install(server.middlewares); },
+    configurePreviewServer(server) { installOnPreviewIfEnabled(server, install); },
+  };
+}
+
+/**
+ * GTFS-Realtime (GTFS-RT) vehicle-position tap proxy (#70) — a user-supplied
+ * PUBLIC transit-agency feed URL (BYOS: bring your own feed, same shape as
+ * the TAK proxy's bring-your-own-server pattern), not a fixed upstream host
+ * like every other data-source proxy in this file. That makes it a genuine
+ * arbitrary-URL fetch, so it reuses the CCTV media proxy's SSRF hardening —
+ * isPlausiblePublicMediaUrl() + the DNS-pinned fetch behind
+ * fetchCctvUpstream() — rather than the narrower host:port check the
+ * Rayhunter/RTL-SDR taps use, since this is the exact same threat shape as
+ * an operator-configured CCTV URL: a full URL with a path, not just a LAN
+ * device address. Most transit agencies' GTFS-RT endpoints send no CORS
+ * headers (confirmed live against a real feed, MBTA's), so the browser
+ * can't fetch them directly — same reason every other tap proxy exists.
+ *
+ * Decoding (server/gtfsRealtimeDecode.js) happens here, server-side, so the
+ * browser gets small normalized JSON instead of raw protobuf bytes — same
+ * convention every other proxy in this file follows.
+ *
+ * Route: GET /api/gtfs-rt/vehicle-positions?url=<feed URL>
+ * @returns {import('vite').Plugin}
+ */
+function gtfsRealtimeProxy() {
+  const TIMEOUT_MS = 10_000;
+  // Real GTFS-RT vehicle-position feeds run tens of KB to a few MB (MBTA's,
+  // ~400 vehicles, is ~45 KB) — generous headroom, still a hard ceiling
+  // against a misbehaving or malicious configured upstream (#28's CCTV
+  // rationale applies identically here).
+  const MAX_BYTES = 16 * 1024 * 1024;
+
+  function sendJson(res, status, obj) {
+    if (res.headersSent) return;
+    res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    res.end(JSON.stringify(obj));
+  }
+
+  const install = (middlewares) => {
+    middlewares.use('/api/gtfs-rt/vehicle-positions', async (req, res) => {
+      const feedUrl = new URL(req.url, 'http://internal').searchParams.get('url');
+      if (!feedUrl || !isPlausiblePublicMediaUrl(feedUrl)) {
+        sendJson(res, 400, { error: 'invalid or missing feed url' });
+        return;
+      }
+      const controller = new AbortController();
+      const timeoutId = setTimeout(
+        () => controller.abort(new DOMException('GTFS-RT upstream fetch timed out', 'TimeoutError')),
+        TIMEOUT_MS,
+      );
+      try {
+        const upstream = await fetchCctvUpstream(feedUrl, {
+          headers: { 'User-Agent': 'gods-eye-view-gtfs-rt-proxy/1.0', Accept: 'application/x-protobuf' },
+          signal: controller.signal,
+        });
+        if (!upstream) { sendJson(res, 502, { error: 'feed unreachable' }); return; }
+        if (!upstream.ok) { sendJson(res, 502, { error: `feed HTTP ${upstream.status}` }); return; }
+        const body = await readCappedResponseBuffer(upstream, MAX_BYTES);
+        if (!body) { sendJson(res, 502, { error: 'feed response too large' }); return; }
+        let decoded;
+        try {
+          decoded = decodeGtfsRealtimeFeed(new Uint8Array(body.buffer, body.byteOffset, body.byteLength));
+        } catch {
+          sendJson(res, 502, { error: 'feed did not decode as GTFS-Realtime protobuf' });
+          return;
+        }
+        sendJson(res, 200, decoded);
+      } catch (err) {
+        console.warn('[gtfs-rt-proxy] upstream fetch failed:', err?.message || err);
+        sendJson(res, 502, { error: 'feed unreachable' });
+      } finally {
+        clearTimeout(timeoutId);
+      }
+    });
+  };
+
+  return {
+    name: 'gtfs-realtime-proxy',
     configureServer(server) { install(server.middlewares); },
     configurePreviewServer(server) { installOnPreviewIfEnabled(server, install); },
   };
@@ -7820,6 +7902,7 @@ export default defineConfig(({ mode }) => {
       firmsProxy(),
       rayhunterProxy(),
       rtlsdrTapProxy(),
+      gtfsRealtimeProxy(),
       rocketLaunchesProxy(),
       terrainHeightsProxy(),
       adsbdbProxy(),

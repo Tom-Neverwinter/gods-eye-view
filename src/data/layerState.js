@@ -132,6 +132,28 @@ function trackingIdOption(key, token, defaultValue = null) {
   });
 }
 
+/**
+ * A single encoded option assignment is `ownerToken.optionToken.value`,
+ * joined with other assignments by `_` (see encodeLayerStateParams) — so a
+ * raw value containing either delimiter character would otherwise be
+ * silently mis-split (a value with a `.`, e.g. a hostname like
+ * `my-hotspot.local`, truncated at the first one; a value with a `_`
+ * spliced into a bogus extra assignment). `encodeURIComponent` alone
+ * doesn't help: `.` and `_` are both in its unreserved set and pass through
+ * unescaped. Escape those two specifically on top of it.
+ */
+function escapeOptionValue(value) {
+  return encodeURIComponent(String(value)).replace(/\./g, '%2E').replace(/_/g, '%5F');
+}
+/** @returns {string|null} null on malformed percent-encoding, never a throw. */
+function unescapeOptionValue(value) {
+  try {
+    return decodeURIComponent(String(value ?? ''));
+  } catch {
+    return null;
+  }
+}
+
 function stringOption(key, token, defaultValue) {
   return Object.freeze({
     key,
@@ -143,8 +165,34 @@ function stringOption(key, token, defaultValue) {
       const normalized = value.trim().toLowerCase();
       return normalized ? normalized : null;
     },
-    encode: (value) => String(value),
-    decode: (value) => (typeof value === 'string' && value.trim() ? value.trim().toLowerCase() : null),
+    encode: (value) => escapeOptionValue(value),
+    decode: (value) => {
+      const decoded = unescapeOptionValue(value)?.trim().toLowerCase();
+      return decoded || null;
+    },
+  });
+}
+
+/**
+ * Case-PRESERVING counterpart to `stringOption`, for a value (like a URL)
+ * where case is meaningful — `stringOption` lowercases, which is correct
+ * for a case-insensitive host:port but would corrupt e.g. a URL path.
+ */
+function urlOption(key, token, defaultValue) {
+  return Object.freeze({
+    key,
+    token,
+    defaultValue,
+    normalize: (value) => {
+      if (typeof value !== 'string') return null;
+      const trimmed = value.trim();
+      return trimmed || null;
+    },
+    encode: (value) => escapeOptionValue(value),
+    decode: (value) => {
+      const decoded = unescapeOptionValue(value)?.trim();
+      return decoded || null;
+    },
   });
 }
 
@@ -252,6 +300,13 @@ const OPTION_GROUPS = Object.freeze({
   rtlsdrTap: Object.freeze([
     stringOption('base', 'b', 'localhost:8080'),
   ]),
+  // The user's own GTFS-Realtime feed URL (#70) — BYOS, no sensible shared
+  // default (every transit agency runs its own feed), so this defaults
+  // empty rather than to any one agency's URL. `urlOption`, not
+  // `stringOption`: a feed URL's path/query is case-sensitive.
+  gtfsRealtimeTap: Object.freeze([
+    urlOption('feedUrl', 'u', ''),
+  ]),
   radio: Object.freeze([
     Object.freeze({
       key: 'filter',
@@ -310,6 +365,7 @@ export const LAYER_STATE_REGISTRY = Object.freeze([
   Object.freeze({ id: 'cctv', token: 'c', disposition: 'enabled+options', optionOwner: 'cctv' }),
   Object.freeze({ id: 'earthquakes', token: 'e', disposition: 'enabled-only' }),
   Object.freeze({ id: 'flights', token: 'f', disposition: 'enabled+options', optionOwner: 'flights' }),
+  Object.freeze({ id: 'gtfs-realtime-tap', token: '2', disposition: 'enabled+options', optionOwner: 'gtfsRealtimeTap' }),
   Object.freeze({ id: 'local-dams', token: 'q', disposition: 'enabled-only' }),
   Object.freeze({ id: 'local-datacenters', token: 'd', disposition: 'enabled-only' }),
   Object.freeze({ id: 'local-firms', token: 'w', disposition: 'enabled-only' }),
@@ -338,6 +394,22 @@ const REGISTRY_BY_TOKEN = new Map(LAYER_STATE_REGISTRY.map((entry) => [entry.tok
 const OPTION_OWNER_IDS = Object.freeze([...new Set(
   LAYER_STATE_REGISTRY.map((entry) => entry.optionOwner).filter(Boolean),
 )]);
+// `optionOwner` is a distinct namespace from `id` — most owners are
+// self-referential (radio's own optionOwner is 'radio', cctv's is 'cctv',
+// ...) but several aren't (rayhunter-tap's owner is 'rayhunter', osm-
+// overlays' is 'osmOverlays'), so the entry that actually OWNS a set of
+// options has to be found by `optionOwner`, never assumed to share the
+// layer's own `id`. Two entries can share one optionOwner — 'military' is
+// `enabled+mirrored-options` on 'flights' — and a self-referential entry
+// (id === optionOwner, the layer that actually defines the option group)
+// always wins that pairing, never the mirroring one.
+const REGISTRY_BY_OPTION_OWNER = new Map();
+for (const entry of LAYER_STATE_REGISTRY) {
+  if (!entry.optionOwner) continue;
+  if (entry.id === entry.optionOwner || !REGISTRY_BY_OPTION_OWNER.has(entry.optionOwner)) {
+    REGISTRY_BY_OPTION_OWNER.set(entry.optionOwner, entry);
+  }
+}
 
 function optionSpecs(ownerId) {
   return OPTION_GROUPS[ownerId] || [];
@@ -464,7 +536,7 @@ export function encodeLayerStateParams(params, state) {
     .join('.'));
   const encodedOptions = [];
   for (const ownerId of OPTION_OWNER_IDS) {
-    const ownerEntry = REGISTRY_BY_ID.get(ownerId);
+    const ownerEntry = REGISTRY_BY_OPTION_OWNER.get(ownerId);
     const ownerOptions = normalized.options[ownerId];
     for (const spec of optionSpecs(ownerId)) {
       // Omit against what an ABSENT token means to a DECODER, not against the
