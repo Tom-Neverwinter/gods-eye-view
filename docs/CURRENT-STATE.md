@@ -1,5 +1,17 @@
 # God's Eye View Current State
 
+## Google browser and server keys
+
+Local Places nearby/text search and the CCTV Street View fallback prefer
+`GOOGLE_MAPS_SERVER_API_KEY`, falling back to `GOOGLE_MAPS_API_KEY` when the
+server key is blank or absent. Only the browser key is injected into client
+code. Both are optional and configured in the same ignored root `.env`, or
+Pinokio's ignored `pinokio/ENVIRONMENT`, through Provider Settings or manual
+editing. `.env.example` and `pinokio/_ENVIRONMENT` document the two entries.
+The Street View headings tool uses the same server-first selection after
+resolving environment overrides per variable; its explicit `--key` wins.
+
+
 ## Infrastructure marker visibility
 
 Datacenter/dam registration uses fresh reusable factories with the application's

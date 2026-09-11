@@ -29,7 +29,7 @@ These are designed to be used directly in the browser (like a Mapbox public toke
 1. **Google Maps API key** — loads Photorealistic 3D Tiles directly and powers GEV place search. **Restrict it** (HTTP referrer + API restriction to the required Google APIs) in the Google Cloud Console. An unrestricted key in a public deployment can be abused and billed to you.
 2. **Cesium ion token** (`CESIUM_ION_TOKEN`, optional — for ion-hosted Google Photorealistic 3D Tiles, Bing world imagery, and world terrain) — used as `Cesium.Ion.defaultAccessToken` client-side. Use a public **`assets:read`** token with **URL restrictions** for any hosted deployment. The Community plan has eligibility and usage limits; a public token is not a secret, but it can still consume the account's quota.
 
-> The Vite `define` block in `vite.config.js` controls exactly what reaches the client: only these two keys plus two non-secret CCTV feature flags. Everything else stays server-side.
+> The Vite `define` block in `vite.config.js` controls exactly what reaches the client: only these two keys. Everything else stays server-side.
 
 **Places and Street View never needed to be on that list** (#33): they're called from the server-side proxies in the table above, which use `GOOGLE_MAPS_SERVER_API_KEY` when it's set. Splitting it from the browser-exposed key lets each key's Google Cloud restriction actually match what it does — the browser key referrer-restricted to the APIs the client loads, the server key IP-restricted (never a referrer, since it never leaves your server) to Places + Street View Static — instead of one key that has to be either over-permissioned or broken for one of its two jobs. A single shared `GOOGLE_MAPS_API_KEY` still works if you don't split them; it just has to cover every API both sides use.
 
@@ -83,3 +83,15 @@ The dev server is a **key broker**: every server-side key above is spendable by 
 ## Responsible use
 
 This is an interface for signals that are **already public**. Use it accordingly: respect privacy, follow data providers' terms, and don't represent public-data inference as authoritative intelligence.
+
+
+### Configuring separate Google keys locally
+
+Terminal development uses one ignored repository-root `.env` for both
+`GOOGLE_MAPS_API_KEY` (browser) and `GOOGLE_MAPS_SERVER_API_KEY` (server).
+The tracked `.env.example` documents both without credentials. Vite injects
+only the browser key; sharing an environment file does not expose the server
+key. Both entries are available in Provider Settings. Pinokio saves them in
+its ignored `pinokio/ENVIRONMENT` instead, with app values and blanks taking
+precedence over inherited global values. An absent server key retains the
+browser-key fallback for existing single-key setups.

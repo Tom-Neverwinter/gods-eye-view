@@ -25,6 +25,7 @@
  * @module vite.config
  */
 
+import { resolveGoogleServerKey } from './scripts/google-server-key.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
 import { promises as fsp } from 'node:fs';
@@ -5403,7 +5404,7 @@ export function keylessGooglePlacesResponse(apiKey) {
  * falls back to the shared browser key and nothing changes.
  */
 export function googleServerApiKey() {
-  return process.env.GOOGLE_MAPS_SERVER_API_KEY || process.env.GOOGLE_MAPS_API_KEY;
+  return resolveGoogleServerKey(process.env);
 }
 
 /**

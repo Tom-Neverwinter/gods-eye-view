@@ -13,6 +13,15 @@ of current runtime behavior, see [`docs/CURRENT-STATE.md`](docs/CURRENT-STATE.md
 
 ## [Unreleased]
 
+### Fixed
+
+- Separate optional Google server credentials for Places and Street View from
+  the browser key, contributed by Tom-Neverwinter (#110). Provider Settings,
+  Pinokio's app-specific credential handling and setup diagnostics recognize
+  both keys. The Street View tool prefers the server key across environment
+  and `.env` sources. Existing single-key and keyless setups remain supported.
+
+
 - Datacenter and dam factories are available through scoped package exports with
   explicit context, overlay and render callbacks. The standalone app uses the
   same implementation and bundled datasets.
