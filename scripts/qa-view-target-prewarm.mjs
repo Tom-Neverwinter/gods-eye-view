@@ -39,7 +39,13 @@ const executablePath = chromeCandidates.find((candidate) => fs.existsSync(candid
 const browser = await puppeteer.launch({
   headless: headful ? false : 'new',
   ...(executablePath ? { executablePath } : {}),
-  args: ['--use-angle=metal', '--enable-gpu', '--no-sandbox'],
+  // Metal is a macOS-only ANGLE backend; anywhere else it fails WebGL init.
+  args: [
+    ...(process.platform === 'darwin'
+      ? ['--use-angle=metal', '--enable-gpu']
+      : ['--use-gl=angle', '--use-angle=swiftshader']),
+    '--no-sandbox',
+  ],
 });
 const page = await browser.newPage();
 const failures = [];
