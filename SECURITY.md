@@ -45,6 +45,17 @@ launcher layout and logs the submitted values. The ignored file is local
 plaintext, not encrypted storage. The macOS Keychain remains the stronger local
 option when launching through `./scripts/dev-fresh.sh`.
 
+### Configuring separate Google keys locally
+
+Terminal development uses one ignored repository-root `.env` for both
+`GOOGLE_MAPS_API_KEY` (browser) and `GOOGLE_MAPS_SERVER_API_KEY` (server).
+The tracked `.env.example` documents both without credentials. Vite injects
+only the browser key; sharing an environment file does not expose the server
+key. Both entries are available in Provider Settings. Pinokio saves them in
+its ignored `pinokio/ENVIRONMENT` instead, with app values and blanks taking
+precedence over inherited global values. An absent server key retains the
+browser-key fallback for existing single-key setups.
+
 ## Server-side proxy hardening
 
 The data proxies in `vite.config.js` are written so the browser cannot turn the server into an open relay:
@@ -83,15 +94,3 @@ The dev server is a **key broker**: every server-side key above is spendable by 
 ## Responsible use
 
 This is an interface for signals that are **already public**. Use it accordingly: respect privacy, follow data providers' terms, and don't represent public-data inference as authoritative intelligence.
-
-
-### Configuring separate Google keys locally
-
-Terminal development uses one ignored repository-root `.env` for both
-`GOOGLE_MAPS_API_KEY` (browser) and `GOOGLE_MAPS_SERVER_API_KEY` (server).
-The tracked `.env.example` documents both without credentials. Vite injects
-only the browser key; sharing an environment file does not expose the server
-key. Both entries are available in Provider Settings. Pinokio saves them in
-its ignored `pinokio/ENVIRONMENT` instead, with app values and blanks taking
-precedence over inherited global values. An absent server key retains the
-browser-key fallback for existing single-key setups.

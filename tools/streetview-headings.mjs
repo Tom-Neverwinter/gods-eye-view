@@ -65,6 +65,10 @@ export function loadApiKey(overrideKey, {
   envPath = join(PROJECT_ROOT, '.env'),
 } = {}) {
   if (overrideKey) return overrideKey;
+  const serverKey = resolveGoogleServerKey({
+    GOOGLE_MAPS_SERVER_API_KEY: environment.GOOGLE_MAPS_SERVER_API_KEY,
+  });
+  if (serverKey) return serverKey;
   let fromDotenv = {};
   try {
     fromDotenv = parseEnv(readFileSync(envPath, 'utf8'));

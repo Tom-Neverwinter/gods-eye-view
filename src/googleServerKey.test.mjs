@@ -57,6 +57,7 @@ test('the Street View tool resolves per-variable overrides before preferring the
     assert.equal(loadApiKey(null, { envPath, environment: { GOOGLE_MAPS_SERVER_API_KEY: 'shell-server' } }), 'shell-server');
     assert.equal(loadApiKey(null, { envPath, environment: { GOOGLE_MAPS_SERVER_API_KEY: '' } }), 'file-browser');
     assert.equal(loadApiKey('explicit-key', { envPath, environment: {} }), 'explicit-key');
+    assert.equal(loadApiKey(null, { envPath: root, environment: { GOOGLE_MAPS_SERVER_API_KEY: 'shell-server' } }), 'shell-server');
     writeFileSync(envPath, 'GOOGLE_MAPS_API_KEY=file-browser\n');
     assert.equal(loadApiKey(null, { envPath, environment: {} }), 'file-browser');
     writeFileSync(envPath, '');
