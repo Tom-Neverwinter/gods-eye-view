@@ -1,12 +1,22 @@
 /**
  * @file Shared address contract for receiver taps.
  *
- * A "tap" is a layer fed by hardware the user owns and runs themselves — an
- * RTL-SDR/dump1090 receiver (#57), a Rayhunter device (#56), a local TAK
- * server (#7), a Meshtastic gateway (#6). Unlike every other provider in this
- * tree, the upstream address comes from the user at runtime rather than from
- * a fixed constant, which makes each tap route an SSRF surface unless the
- * address is constrained.
+ * A "tap" is a layer fed by hardware the user owns and runs themselves. What
+ * this module governs is narrower than "tap" in general: it is for taps whose
+ * upstream address arrives **from the browser at request time**, which is what
+ * makes the route an SSRF surface. Today that is the Rayhunter device (#56),
+ * which is addressed as `?base=host:port`, and it would cover an RTL-SDR /
+ * dump1090 receiver (#57) if that one is built server-side.
+ *
+ * It deliberately does NOT cover the other layers in the receiver-taps lane,
+ * because they are a different shape and forcing them through this check would
+ * be wrong:
+ *
+ * - Meshtastic (#6) reads a fixed public broker (`mqtt.meshtastic.org`).
+ * - WiGLE (#11) reads a fixed public API behind a token.
+ * - TAK (#7) takes its host from operator-set env config, not from the
+ *   browser, and a TAK server is frequently a legitimate REMOTE host — a
+ *   private-only rule would break it.
  *
  * This module is the single place that constraint lives, so taps cannot each
  * re-derive it and disagree. The rule is deliberately narrow:
