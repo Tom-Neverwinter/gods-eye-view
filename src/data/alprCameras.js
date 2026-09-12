@@ -28,13 +28,23 @@ import { registerPickOwner, unregisterPickOwner } from './pickRegistry.js';
 const LAYER_ID = 'alpr-cameras';
 const OVERPASS_URL = '/api/overpass';
 const REQUEST_DEBOUNCE_MS = 500;
-/** ALPR nodes are far denser than mapped installations (336K+ worldwide as
- * of 2026), so the viewport allowed before asking the user to zoom in is
- * tighter than militaryInstallations' 10°. */
+/** ALPR nodes are far denser on the ground than mapped installations, so the
+ * viewport allowed before asking the user to zoom in is tighter than
+ * militaryInstallations' 10°. Deliberately no worldwide count here: the tag is
+ * actively being mapped and any figure baked into a comment ages badly. */
 const MAX_VIEWPORT_DEGREES = 3;
-/** Overpass `out body N;` cap — also used to detect a truncated (saturated) response. */
-const QUERY_LIMIT = 600;
-const MAX_RENDERED = 500;
+/** Overpass `out body N;` cap — also used to detect a truncated (saturated) response.
+ * Sized so a whole dense metro fits rather than silently truncating: a half-degree
+ * box over Austin alone returns ~669 ALPR nodes, which overflowed the previous
+ * 600/500 ceilings before the user saw any saturation warning. */
+const QUERY_LIMIT = 2500;
+const MAX_RENDERED = 2000;
+/** Degrees — fetch boxes snap outward to this grid so panning within a cell reuses
+ * one bbox instead of issuing a new Overpass query per frame. Repeats then hit
+ * Overpass's own query cache, which is what keeps wide metro boxes from 502ing.
+ * Insight and approach from @d8ahazard (#63). A power-of-two fraction so the grid
+ * lines are exactly representable and never drift. */
+const BBOX_GRID_DEGREES = 0.125;
 /** Meters — length of the facing-direction indicator line, when a camera reports one. */
 const DIRECTION_CONE_M = 25;
 const EARTH_MEAN_RADIUS_M = 6371008.8;
@@ -54,6 +64,8 @@ const state = {
   stale: false,
   /** Whether the query hit QUERY_LIMIT — the view likely holds more cameras than shown. */
   saturated: false,
+  /** Key of the last snapped box fetched successfully; lets an unchanged cell skip a refetch. */
+  lastBoxKey: '',
   loading: false,
   abort: null,
   retryTimer: null,
@@ -121,6 +133,35 @@ export function alprRetryDelayMs(prevDelayMs) {
 }
 
 /** Map one raw Overpass node element to a plain camera record. Null for anything unusable. */
+/**
+ * Snap a bbox OUTWARD to the {@link BBOX_GRID_DEGREES} grid.
+ *
+ * Outward (floor the low edges, ceil the high edges) so the snapped box always
+ * contains the viewport — rounding to nearest would sometimes fetch a box
+ * smaller than what is on screen and leave a visible margin unpopulated.
+ *
+ * @param {{south:number,west:number,north:number,east:number}} box
+ * @returns {{south:number,west:number,north:number,east:number}|null} null when
+ *   any edge is not finite.
+ */
+export function quantizeBox(box) {
+  if (!box) return null;
+  const { south, west, north, east } = box;
+  if (!Number.isFinite(south + west + north + east)) return null;
+  const g = BBOX_GRID_DEGREES;
+  return {
+    south: Math.max(-90, Math.floor(south / g) * g),
+    west: Math.max(-180, Math.floor(west / g) * g),
+    north: Math.min(90, Math.ceil(north / g) * g),
+    east: Math.min(180, Math.ceil(east / g) * g),
+  };
+}
+
+/** Stable identity for a snapped box, so an unchanged cell can skip the refetch. */
+export function boxKey(box) {
+  return box ? `${box.south},${box.west},${box.north},${box.east}` : '';
+}
+
 export function normalizeAlprNode(el) {
   if (!el || el.type !== 'node' || !Number.isFinite(el.lat) || !Number.isFinite(el.lon)) return null;
   const tags = el.tags || {};
@@ -134,8 +175,8 @@ export function normalizeAlprNode(el) {
     manufacturer: textTag(tags.manufacturer),
     cameraType: textTag(tags['camera:type']),
     zone: textTag(tags['surveillance:zone']),
-    // ponytail: only numeric bearings are parsed; compass-word directions
-    // ("N"/"NE") are rare on this tag and just render with no cone.
+    // Only numeric bearings are parsed; compass-word directions ("N"/"NE")
+    // are rare on this tag and just render with no cone.
     directionDeg: numTag(tags['camera:direction'] ?? tags.direction),
     ref: textTag(tags.ref),
     lastVerified: textTag(tags.check_date) || textTag(tags['survey:date']),
@@ -143,8 +184,14 @@ export function normalizeAlprNode(el) {
   };
 }
 
+/**
+ * `surveillance:type` is a semicolon-separated multi-value tag, so an exact
+ * `="ALPR"` match silently drops the `camera;ALPR` / `ALPR;camera` combos that
+ * real contributors use. Anchor on the value separators instead of substring
+ * matching, so `ALPR` matches but a hypothetical `NOTALPR` would not.
+ */
 function buildOverpassQuery(south, west, north, east) {
-  return `[out:json][timeout:20];node["man_made"="surveillance"]["surveillance:type"="ALPR"]`
+  return `[out:json][timeout:20];node["man_made"="surveillance"]["surveillance:type"~"(^|;)ALPR(;|$)"]`
     + `(${south},${west},${north},${east});out body ${QUERY_LIMIT};`;
 }
 
@@ -298,12 +345,18 @@ async function loadCameras() {
     setAlprStatus('zoom-in', 'Zoom in to load mapped ALPR camera locations');
     return;
   }
+  // Snap after the viewport-size gate above, so the "zoom in" prompt still
+  // reflects what the user actually sees rather than the padded fetch box.
+  const fetchBox = quantizeBox(box);
+  const fetchKey = boxKey(fetchBox);
+  // Panning inside one grid cell needs no new query at all.
+  if (fetchKey && fetchKey === state.lastBoxKey && !state.loading) return;
   state.abort?.abort();
   const requestAbort = new AbortController();
   state.abort = requestAbort;
   state.loading = true;
   try {
-    const { elements, stale } = await fetchAlprNodes(box, requestAbort.signal);
+    const { elements, stale } = await fetchAlprNodes(fetchBox, requestAbort.signal);
     if (requestAbort.signal.aborted || state.abort !== requestAbort || !state.enabled) return;
     const records = elements.map(normalizeAlprNode).filter(Boolean);
     state.records = records;
@@ -311,6 +364,7 @@ async function loadCameras() {
     state.lastUpdate = Date.now();
     state.stale = stale;
     state.saturated = elements.length >= QUERY_LIMIT;
+    state.lastBoxKey = fetchKey;
     clearUnavailableRetry();
     setAlprStatus(
       records.length ? (stale ? 'stale' : 'ready') : 'empty',
@@ -321,6 +375,7 @@ async function loadCameras() {
     renderRecords();
   } catch (error) {
     if (error?.name === 'AbortError') return;
+    state.lastBoxKey = '';
     setAlprStatus('unavailable', error?.message || 'ALPR camera feed unavailable');
     scheduleUnavailableRetry();
   } finally {
@@ -353,6 +408,9 @@ const alprCamerasLayer = {
   },
   disable() {
     state.enabled = false;
+    // Forget the cached cell so re-enabling always refetches rather than
+    // re-showing however old the retained entities happen to be.
+    state.lastBoxKey = '';
     unregisterPickOwner(LAYER_ID);
     clearUnavailableRetry();
     clearTimeout(state.debounceTimer);
