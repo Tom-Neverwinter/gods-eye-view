@@ -37,7 +37,11 @@ test('parseTapAddress: rejects public addresses — a tap reads your own network
     '192.167.1.1:80',
     '192.169.1.1:80',
   ]) {
-    assert.equal(parseTapAddress(address), null, `${address} should be rejected`);
+    assert.equal(
+      parseTapAddress(address),
+      null,
+      `${address} should be rejected`,
+    );
   }
 });
 
@@ -49,8 +53,18 @@ test('parseTapAddress: rejects link-local, so the cloud metadata address cannot 
 test('parseTapAddress: malformed dotted-quads are rejected, not treated as private', () => {
   // The trap this module exists to avoid: a classifier that reports garbage as
   // "not public" would let these through under an is-it-local test.
-  for (const address of ['999.1.1.1:80', '10.0.0:80', '10.0.0.1.5:80', '10.0.0.256:80', '-1.0.0.1:80']) {
-    assert.equal(parseTapAddress(address), null, `${address} should be rejected`);
+  for (const address of [
+    '999.1.1.1:80',
+    '10.0.0:80',
+    '10.0.0.1.5:80',
+    '10.0.0.256:80',
+    '-1.0.0.1:80',
+  ]) {
+    assert.equal(
+      parseTapAddress(address),
+      null,
+      `${address} should be rejected`,
+    );
   }
 });
 
@@ -63,13 +77,28 @@ test('parseTapAddress: rejects anything shaped like a URL rather than repairing 
     'user@127.0.0.1:8080',
     '127.0.0.1:8080\\x',
   ]) {
-    assert.equal(parseTapAddress(address), null, `${address} should be rejected`);
+    assert.equal(
+      parseTapAddress(address),
+      null,
+      `${address} should be rejected`,
+    );
   }
 });
 
 test('parseTapAddress: rejects a missing, empty, or out-of-range port', () => {
-  for (const address of ['127.0.0.1', '127.0.0.1:', '127.0.0.1:0', '127.0.0.1:65536', '127.0.0.1:abc', ':8080']) {
-    assert.equal(parseTapAddress(address), null, `${address} should be rejected`);
+  for (const address of [
+    '127.0.0.1',
+    '127.0.0.1:',
+    '127.0.0.1:0',
+    '127.0.0.1:65536',
+    '127.0.0.1:abc',
+    ':8080',
+  ]) {
+    assert.equal(
+      parseTapAddress(address),
+      null,
+      `${address} should be rejected`,
+    );
   }
 });
 
@@ -107,7 +136,10 @@ test('isLocalIpv4: boundaries of each allowed range', () => {
 
 test('tapUrl: joins a parsed address with a module-supplied path', () => {
   const address = parseTapAddress('192.168.1.1:8080');
-  assert.equal(tapUrl(address, '/api/qmdl-manifest'), 'http://192.168.1.1:8080/api/qmdl-manifest');
+  assert.equal(
+    tapUrl(address, '/api/qmdl-manifest'),
+    'http://192.168.1.1:8080/api/qmdl-manifest',
+  );
 });
 
 test('tapUrl: refuses an unparsed address or a relative path', () => {

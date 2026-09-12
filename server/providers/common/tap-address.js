@@ -64,12 +64,15 @@ export function isLocalIpv4(host) {
   if (!match) return false;
   const [a, b] = [Number(match[1]), Number(match[2])];
   const octets = match.slice(1).map(Number);
-  if (octets.some((octet) => !Number.isInteger(octet) || octet < 0 || octet > 255)) return false;
+  if (
+    octets.some((octet) => !Number.isInteger(octet) || octet < 0 || octet > 255)
+  )
+    return false;
   return (
-    a === 127 // loopback
-    || a === 10 // 10/8
-    || (a === 172 && b >= 16 && b <= 31) // 172.16/12
-    || (a === 192 && b === 168) // 192.168/16
+    a === 127 || // loopback
+    a === 10 || // 10/8
+    (a === 172 && b >= 16 && b <= 31) || // 172.16/12
+    (a === 192 && b === 168) // 192.168/16
   );
 }
 
@@ -83,7 +86,9 @@ export function isLocalIpv4(host) {
  *   nothing to read.
  */
 export function parseTapAddress(raw) {
-  const value = String(raw ?? '').trim().toLowerCase();
+  const value = String(raw ?? '')
+    .trim()
+    .toLowerCase();
   if (!value || value.length > 263) return null;
   // Reject a scheme, credentials, path, or query outright rather than
   // stripping them: each is a sign the caller meant a URL, not an address,
@@ -100,7 +105,8 @@ export function parseTapAddress(raw) {
   const port = Number(portText);
   if (port < 1 || port > MAX_PORT) return null;
 
-  const hostOk = host === 'localhost' || MDNS_RE.test(host) || isLocalIpv4(host);
+  const hostOk =
+    host === 'localhost' || MDNS_RE.test(host) || isLocalIpv4(host);
   if (!hostOk) return null;
 
   return { host, port, origin: `http://${host}:${port}` };
@@ -117,7 +123,8 @@ export function parseTapAddress(raw) {
  * @returns {string}
  */
 export function tapUrl(address, path) {
-  if (!address?.origin) throw new TypeError('tapUrl: address must come from parseTapAddress');
+  if (!address?.origin)
+    throw new TypeError('tapUrl: address must come from parseTapAddress');
   if (typeof path !== 'string' || !path.startsWith('/')) {
     throw new TypeError('tapUrl: path must be an absolute path');
   }
