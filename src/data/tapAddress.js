@@ -42,14 +42,21 @@
  *    platform-specific, and no tap has needed it. Rejected explicitly rather
  *    than half-supported.
  *
- * Note on reuse: `isNonGlobalIpv4()` in `../radio/stations.js` answers a
+ * Lives in `src/data/` rather than under `server/providers/` because both
+ * sides need the same answer: the server as a trust boundary, the browser to
+ * give immediate feedback on a typed address without a round trip. Sharing one
+ * module means they cannot drift — the same reason #274 exists about eight
+ * copies of haversine. `server/providers/gbfs.js` importing
+ * `src/data/gbfsSource.js` is the established direction for this.
+ *
+ * Note on reuse: `isNonGlobalIpv4()` in `server/providers/radio/stations.js` answers a
  * neighbouring question and was deliberately NOT reused. It reports malformed
  * input such as `999.1.1.1` as non-global, which is the safe direction for the
  * radio proxy's "is this public enough to fetch?" test but inverts into
  * *allowing* garbage under a tap's "is this local enough to fetch?" test. The
  * positive allowlist below cannot invert that way.
  *
- * @module server/providers/common/tap-address
+ * @module data/tapAddress
  */
 
 /** Link-local (169.254/16) is excluded wholesale, which also covers the cloud

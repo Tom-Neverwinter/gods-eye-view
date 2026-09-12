@@ -2,11 +2,7 @@
 // Contract tests for the shared receiver-tap address check. Pure — no server.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import {
-  isLocalIpv4,
-  parseTapAddress,
-  tapUrl,
-} from '../../server/providers/common/tap-address.js';
+import { isLocalIpv4, parseTapAddress, tapUrl } from './tapAddress.js';
 
 test('parseTapAddress: accepts loopback and every RFC1918 range', () => {
   for (const address of [
